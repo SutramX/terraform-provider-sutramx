@@ -25,6 +25,9 @@ type fakeAPI struct {
 	monitors    map[string]map[string]any // id -> monitor
 	pages       map[string]map[string]any
 	connections map[string]map[string]any
+	// Read-only lists (GET /maintenance, GET /settings/escalation-policies).
+	maintenance []any
+	escalation  []any
 }
 
 func newFakeAPI() *fakeAPI {
@@ -178,6 +181,14 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case route == "DELETE status/pages":
 		delete(f.pages, parts[2])
 		writeJSON(w, 200, map[string]any{"success": true})
+
+	case route == "GET maintenance" && len(parts) == 1:
+		writeJSON(w, 200, f.maintenance)
+	case route == "GET settings" && len(parts) == 2 && parts[1] == "escalation-policies":
+		writeJSON(w, 200, f.escalation)
+	// API keys are never workspace owners: the real API refuses these writes.
+	case prefix == "maintenance" || (prefix == "settings" && len(parts) > 1 && parts[1] == "escalation-policies"):
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "Workspace owner permission required", "code": "WORKSPACE_OWNER_REQUIRED"})
 
 	case route == "GET integrations":
 		list := []any{}

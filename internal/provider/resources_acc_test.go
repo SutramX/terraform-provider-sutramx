@@ -148,10 +148,14 @@ func TestAccDataSources(t *testing.T) {
 				Config: `
 data "sutramx_regions" "all" {}
 data "sutramx_plans" "all" {}
+data "sutramx_maintenance_windows" "all" {}
+data "sutramx_escalation_policies" "all" {}
 `,
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttrSet("data.sutramx_regions.all", "regions.0.code"),
 					resource.TestCheckResourceAttrSet("data.sutramx_plans.all", "plans.0.id"),
+					resource.TestCheckResourceAttrSet("data.sutramx_maintenance_windows.all", "windows.#"),
+					resource.TestCheckResourceAttrSet("data.sutramx_escalation_policies.all", "policies.#"),
 				),
 			},
 		},

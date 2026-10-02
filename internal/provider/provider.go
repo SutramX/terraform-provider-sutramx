@@ -41,7 +41,7 @@ func (p *sutramxProvider) Metadata(_ context.Context, _ provider.MetadataRequest
 
 func (p *sutramxProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Manage [SutramX](https://sutramx.com) uptime monitors, status pages and alert channels. " +
+		MarkdownDescription: "Manage [SutramX](https://sutramx.com) uptime monitors, status pages and alert channels, and read maintenance windows and escalation policies. " +
 			"Authenticates with a workspace API key; every resource lives in the workspace the key belongs to.",
 		Attributes: map[string]schema.Attribute{
 			"api_key": schema.StringAttribute{
@@ -108,6 +108,8 @@ func (p *sutramxProvider) DataSources(_ context.Context) []func() datasource.Dat
 	return []func() datasource.DataSource{
 		NewRegionsDataSource,
 		NewPlansDataSource,
+		NewMaintenanceWindowsDataSource,
+		NewEscalationPoliciesDataSource,
 	}
 }
 

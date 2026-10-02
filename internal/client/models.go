@@ -112,3 +112,47 @@ type Plan struct {
 type PlansResponse struct {
 	Plans []Plan `json:"plans"`
 }
+
+// MaintenanceRecurrence is the repeat rule of a maintenance window.
+type MaintenanceRecurrence struct {
+	Type     string  `json:"type"`
+	Weekdays []int64 `json:"weekdays"`
+	Until    *string `json:"until"`
+}
+
+// MaintenanceWindow is one entry of GET /maintenance (camelCase, unlike most endpoints).
+type MaintenanceWindow struct {
+	ID               string                `json:"id"`
+	Title            string                `json:"title"`
+	Description      string                `json:"description"`
+	Status           string                `json:"status"`
+	EffectiveStatus  string                `json:"effectiveStatus"`
+	StartTime        string                `json:"startTime"`
+	EndTime          string                `json:"endTime"`
+	Timezone         string                `json:"timezone"`
+	Impact           string                `json:"impact"`
+	ScopeType        string                `json:"scopeType"`
+	MonitorIDs       []string              `json:"monitorIds"`
+	GroupIDs         []string              `json:"groupIds"`
+	AffectedServices []string              `json:"affectedServices"`
+	Recurrence       MaintenanceRecurrence `json:"recurrence"`
+}
+
+type EscalationStep struct {
+	ID           string  `json:"id"`
+	StepOrder    int64   `json:"step_order"`
+	DelayMinutes int64   `json:"delay_minutes"`
+	Channel      *string `json:"channel"`
+	TargetType   *string `json:"target_type"`
+	TargetValue  string  `json:"target_value"`
+	TargetLabel  *string `json:"target_label"`
+}
+
+// EscalationPolicy is one entry of GET /settings/escalation-policies.
+type EscalationPolicy struct {
+	ID        string           `json:"id"`
+	Name      string           `json:"name"`
+	IsEnabled bool             `json:"is_enabled"`
+	MaxDepth  int64            `json:"max_depth"`
+	Steps     []EscalationStep `json:"steps"`
+}
