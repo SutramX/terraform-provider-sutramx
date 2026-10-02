@@ -250,5 +250,9 @@ func (r *alertChannelResource) Delete(ctx context.Context, req resource.DeleteRe
 }
 
 func (r *alertChannelResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	if !uuidPattern.MatchString(req.ID) {
+		resp.Diagnostics.AddError("Invalid import ID", "Use the alert channel id (a UUID).")
+		return
+	}
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }

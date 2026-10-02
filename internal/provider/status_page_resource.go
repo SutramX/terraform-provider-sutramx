@@ -85,7 +85,7 @@ func (r *statusPageResource) Schema(_ context.Context, _ resource.SchemaRequest,
 				Computed:            true,
 				PlanModifiers:       []planmodifier.Bool{boolplanmodifier.UseStateForUnknown()},
 			},
-			"logo_url":     schema.StringAttribute{Optional: true, MarkdownDescription: "https:// image URL."},
+			"logo_url":     schema.StringAttribute{Optional: true, MarkdownDescription: "https:// image URL.", Validators: []validator.String{stringvalidator.RegexMatches(regexp.MustCompile(`^https://\S+$`), "must be an https:// URL")}},
 			"accent_color": schema.StringAttribute{Optional: true, MarkdownDescription: "Hex colour like `#0d9488`.", Validators: []validator.String{stringvalidator.RegexMatches(regexp.MustCompile(`^#[0-9a-fA-F]{6}$`), "use a hex colour like #0d9488")}},
 			"show_response_times": schema.BoolAttribute{
 				Optional:      true,
@@ -283,5 +283,9 @@ func (r *statusPageResource) Delete(ctx context.Context, req resource.DeleteRequ
 }
 
 func (r *statusPageResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	if !uuidPattern.MatchString(req.ID) {
+		resp.Diagnostics.AddError("Invalid import ID", "Use the status page id (a UUID).")
+		return
+	}
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }

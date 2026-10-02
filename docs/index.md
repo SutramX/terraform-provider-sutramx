@@ -37,5 +37,5 @@ variable "sutramx_api_key" {
 
 ### Optional
 
-- `api_key` (String, Sensitive) SutramX API key (`sk_...`), from Settings → API keys. Can also be set with `SUTRAMX_API_KEY`. `sutramx_alert_channel` needs a key created with **Automation access**.
-- `api_url` (String) API base URL. Defaults to `https://api.sutramx.com`, or `SUTRAMX_API_URL`.
+- `api_key` (String, Sensitive) SutramX API key (`sk_...`), from Settings → API keys. Can also be set with `SUTRAMX_API_KEY`. `sutramx_alert_channel` needs a key created with **Automation access**. A **Read-only** key can run `terraform plan` (data sources and refresh) but `apply` fails with `403 READ_ONLY_ACCESS`; use it for plan-only CI jobs and drift detection.
+- `api_url` (String) API base URL. Defaults to `https://api.sutramx.com`, or `SUTRAMX_API_URL`. Must use `https://` (plain `http://` only for localhost).

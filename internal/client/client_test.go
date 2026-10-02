@@ -74,3 +74,59 @@ func TestDoSendsKeyAndDecodes(t *testing.T) {
 		t.Fatalf("expected 401, got %v", err)
 	}
 }
+
+func TestValidateBaseURL(t *testing.T) {
+	ok := map[string]string{
+		"":                          DefaultAPIURL,
+		"https://api.sutramx.com/":  "https://api.sutramx.com",
+		"http://localhost:3001":     "http://localhost:3001",
+		"http://127.0.0.1:3001/api": "http://127.0.0.1:3001/api",
+	}
+	for in, want := range ok {
+		got, err := ValidateBaseURL(in)
+		if err != nil || got != want {
+			t.Errorf("ValidateBaseURL(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"http://api.sutramx.com", "ftp://example.com", "https://u:p@example.com", "https://example.com/?x=1", "not a url", "//example.com"} {
+		if _, err := ValidateBaseURL(in); err == nil {
+			t.Errorf("ValidateBaseURL(%q) should fail", in)
+		}
+	}
+	if !IsOfficialHost("https://api.sutramx.com") || IsOfficialHost("https://sutramx.com.evil.io") {
+		t.Error("IsOfficialHost")
+	}
+}
+
+func TestDoRetries429AndNotPost500(t *testing.T) {
+	hits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		switch {
+		case r.URL.Path == "/limited" && hits < 3:
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":"slow down"}`))
+		case r.URL.Path == "/boom":
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"boom"}`))
+		case r.URL.Path == "/redirect":
+			http.Redirect(w, r, "https://example.com/steal", http.StatusFound)
+		default:
+			_, _ = w.Write([]byte(`{"id":"m1"}`))
+		}
+	}))
+	defer server.Close()
+	c := New("sk_test", server.URL, "test")
+	var monitor Monitor
+	if err := c.Get(context.Background(), "/limited", &monitor); err != nil || monitor.ID != "m1" || hits != 3 {
+		t.Fatalf("429 retry: err=%v hits=%d", err, hits)
+	}
+	hits = 0
+	if err := c.Post(context.Background(), "/boom", nil, nil); err == nil || hits != 1 {
+		t.Fatalf("POST 500 must not be retried: err=%v hits=%d", err, hits)
+	}
+	if err := c.Get(context.Background(), "/redirect", &monitor); err == nil {
+		t.Fatal("redirects must not be followed")
+	}
+}

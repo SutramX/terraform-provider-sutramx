@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
-	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
@@ -205,8 +204,9 @@ func applyMonitor(ctx context.Context, monitor client.Monitor, model *monitorMod
 	model.Name = types.StringValue(monitor.Name)
 	model.Type = types.StringValue(monitor.Type)
 	if monitor.URL != nil && *monitor.URL != "" {
-		// The API lower-cases only the scheme and host; keep the user's spelling.
-		if model.URL.IsNull() || model.URL.IsUnknown() || !strings.EqualFold(model.URL.ValueString(), *monitor.URL) {
+		// The API lower-cases only the scheme and host, and masks a URL
+		// password ([REDACTED]); keep the user's spelling and credentials.
+		if model.URL.IsNull() || model.URL.IsUnknown() || !keepPriorURL(model.URL.ValueString(), *monitor.URL) {
 			model.URL = types.StringValue(*monitor.URL)
 		}
 	} else {
@@ -222,6 +222,8 @@ func applyMonitor(ctx context.Context, monitor client.Monitor, model *monitorMod
 	}
 	if !model.ConfigJSON.IsNull() && !model.ConfigJSON.IsUnknown() {
 		remoteConfig := withoutKeys(monitor.Config, undeclaredKeys(model.ConfigJSON.ValueString(), serverManagedConfigKeys)...)
+		// Stored credentials come back masked: keep the configured values there.
+		remoteConfig = keepPriorSecrets(remoteConfig, model.ConfigJSON.ValueString())
 		if !jsonEqual(model.ConfigJSON.ValueString(), remoteConfig) {
 			model.ConfigJSON = types.StringValue(remoteConfig)
 		}
@@ -327,6 +329,10 @@ func (r *monitorResource) Delete(ctx context.Context, req resource.DeleteRequest
 // matches the monitor plans no changes after the import.
 func (r *monitorResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	var monitor client.Monitor
+	if !uuidPattern.MatchString(req.ID) && !monitorKeyPattern.MatchString(req.ID) {
+		resp.Diagnostics.AddError("Invalid import ID", "Use a monitor id (UUID) or a monitor key (1-128 letters, digits or . _ : / -, starting with a letter or digit).")
+		return
+	}
 	lookup := "/monitors/" + client.PathEscape(req.ID)
 	if !uuidPattern.MatchString(req.ID) {
 		lookup = "/automation/monitors/" + client.PathEscape(req.ID)

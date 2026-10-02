@@ -51,7 +51,7 @@ func (p *sutramxProvider) Schema(_ context.Context, _ provider.SchemaRequest, re
 				Sensitive: true,
 			},
 			"api_url": schema.StringAttribute{
-				MarkdownDescription: "API base URL. Defaults to `https://api.sutramx.com`, or `SUTRAMX_API_URL`.",
+				MarkdownDescription: "API base URL. Defaults to `https://api.sutramx.com`, or `SUTRAMX_API_URL`. Must use `https://` (plain `http://` only for localhost).",
 				Optional:            true,
 			},
 		},
@@ -77,6 +77,15 @@ func (p *sutramxProvider) Configure(ctx context.Context, req provider.ConfigureR
 	apiURL := os.Getenv("SUTRAMX_API_URL")
 	if !config.APIURL.IsNull() && !config.APIURL.IsUnknown() {
 		apiURL = config.APIURL.ValueString()
+	}
+	apiURL, err := client.ValidateBaseURL(apiURL)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("api_url"), "Unsafe SutramX API URL", err.Error())
+		return
+	}
+	if apiKey != "" && !client.IsOfficialHost(apiURL) {
+		resp.Diagnostics.AddAttributeWarning(path.Root("api_url"), "API key sent to a non-SutramX host",
+			"api_url does not point at sutramx.com; the API key will be sent to "+apiURL+". Ignore this only for self-hosted or staging APIs you trust.")
 	}
 
 	// Data sources for public data (regions, plans) work without a key;
