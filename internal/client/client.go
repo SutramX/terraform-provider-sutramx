@@ -89,9 +89,9 @@ func New(apiKey, baseURL, userAgent string) *Client {
 		baseURL = DefaultAPIURL
 	}
 	return &Client{
-		baseURL:    strings.TrimRight(baseURL, "/"),
-		apiKey:     apiKey,
-		userAgent:  userAgent,
+		baseURL:   strings.TrimRight(baseURL, "/"),
+		apiKey:    apiKey,
+		userAgent: userAgent,
 		httpClient: &http.Client{
 			Timeout: 60 * time.Second,
 			// The API never redirects; a redirect must not carry the key elsewhere.
