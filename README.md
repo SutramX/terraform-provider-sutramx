@@ -75,4 +75,8 @@ or add a `dev_overrides` block for `sutramx/sutramx` pointing at this directory 
 
 ### Releasing
 
-Tag `vX.Y.Z` and run goreleaser (`.goreleaser.yml`) with a GPG key registered in the Terraform Registry for the `sutramx` namespace.
+Pushing a `vX.Y.Z` tag runs `.github/workflows/release.yml`: it imports the signing key from the `GPG_PRIVATE_KEY` and `PASSPHRASE` repository secrets and runs GoReleaser (`.goreleaser.yml`), which publishes the zips, `SHA256SUMS`, its detached signature and the registry manifest as a GitHub release. The public half of that key must be registered in the Terraform Registry for the `sutramx` namespace. `.github/workflows/ci.yml` builds, vets and tests every push and pull request.
+
+## License
+
+[MIT](LICENSE)

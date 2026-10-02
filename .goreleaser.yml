@@ -1,4 +1,6 @@
-# Registry releases: tag vX.Y.Z and run goreleaser with GPG_FINGERPRINT set.
+# Registry releases: pushing a vX.Y.Z tag runs .github/workflows/release.yml, which
+# imports the signing key and sets GPG_FINGERPRINT. Mirrors HashiCorp's
+# terraform-provider-scaffolding-framework.
 version: 2
 before:
   hooks:
