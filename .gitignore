@@ -1,0 +1,5 @@
+terraform-provider-sutramx
+dist/
+.terraform/
+*.tfstate*
+.terraform.lock.hcl
