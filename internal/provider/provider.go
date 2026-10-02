@@ -46,7 +46,9 @@ func (p *sutramxProvider) Schema(_ context.Context, _ provider.SchemaRequest, re
 		Attributes: map[string]schema.Attribute{
 			"api_key": schema.StringAttribute{
 				MarkdownDescription: "SutramX API key (`sk_...`), from Settings → API keys. Can also be set with `SUTRAMX_API_KEY`. " +
-					"`sutramx_alert_channel` needs a key created with **Automation access**.",
+					"`sutramx_alert_channel` needs a key created with **Automation access**. " +
+					"A **Read-only** key can run `terraform plan` (data sources and refresh) but `apply` fails with `403 READ_ONLY_ACCESS`; " +
+					"use it for plan-only CI jobs and drift detection.",
 				Optional:  true,
 				Sensitive: true,
 			},

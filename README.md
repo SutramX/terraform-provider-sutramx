@@ -5,7 +5,7 @@ Manage [SutramX](https://sutramx.com) uptime monitoring with Terraform, built on
 | | |
 |---|---|
 | Resources | `sutramx_monitor`, `sutramx_status_page`, `sutramx_alert_channel` |
-| Data sources | `sutramx_regions`, `sutramx_plans` |
+| Data sources | `sutramx_regions`, `sutramx_plans`, `sutramx_maintenance_windows`, `sutramx_escalation_policies` |
 | Import | monitors by id or key, status pages and alert channels by id |
 
 ```hcl
@@ -42,6 +42,7 @@ Create an API key in SutramX under **Settings → API keys** and set `SUTRAMX_AP
 - **Monitors** are written with the idempotent `PUT /automation/monitors/{key}` endpoint, the same one `sutramx.yml` uses, so a retried create never makes a duplicate. Without `key`, the provider generates one (`tf-...`). Optional fields you leave out (`config_json`, `tags`, `interval_seconds`) are left as they are on the server; `regions` left out means the plan's default locations. Changing `type` replaces the monitor. Importing a dashboard monitor gives it a key on the next apply.
 - **Status pages** are matched by id; `monitors` is the ordered list shown on the page (omit it to manage the list in the dashboard).
 - **Alert channels** are integration connections. Their `config` is stored encrypted and never read back, so Terraform cannot detect secret changes made in the dashboard.
+- **Maintenance windows and escalation policies** are read-only data sources. They silence or reroute alerts, so the API lets only the workspace owner create or change them from the dashboard; API keys (even automation keys) can list them.
 - Plan limits are enforced by the API exactly as in the dashboard; errors such as `ENTITLEMENT_LIMIT_REACHED` come back as Terraform diagnostics.
 
 ## Development

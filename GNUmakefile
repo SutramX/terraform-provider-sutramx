@@ -22,6 +22,6 @@ testacc:
 	TF_ACC=1 go test ./internal/provider -run TestAcc -v -timeout 30m
 
 docs:
-	go run github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs generate
+	go run github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs@v0.25.0 generate --provider-name sutramx
 
 .PHONY: default build install fmt lint test testacc docs
