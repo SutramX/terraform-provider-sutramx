@@ -44,8 +44,11 @@ type StatusPage struct {
 	Monitors          []StatusPageMonitor `json:"monitors"`
 }
 
+// Routing is a connection's alert routing: scope "all", "groups" (group_ids)
+// or "monitors" (monitor_ids). The API returns only the list of the scope.
 type Routing struct {
 	Scope      string   `json:"scope"`
+	GroupIDs   []string `json:"group_ids,omitempty"`
 	MonitorIDs []string `json:"monitor_ids,omitempty"`
 }
 

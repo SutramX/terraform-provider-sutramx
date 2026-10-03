@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -100,6 +101,9 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if value, ok := body[field]; ok {
 				monitor[field] = value
 			}
+		}
+		if config, ok := monitor["config"].(map[string]any); ok && body["config"] != nil {
+			monitor["config"] = fakeTypedConfig(fmt.Sprint(monitor["type"]), config)
 		}
 		if tags, ok := body["tags"].([]any); ok {
 			lowered := []string{}
@@ -204,12 +208,14 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"connections": list})
 	case r.Method == "POST" && len(parts) == 3 && parts[0] == "integrations" && parts[2] == "connections":
 		id := f.id()
-		f.connections[id] = map[string]any{"id": id, "integration_type": parts[1], "name": body["name"], "status": "connected", "config": map[string]any{"webhook_url": "https://hooks.example.com/…1234"}, "routing": body["routing"]}
+		f.connections[id] = map[string]any{"id": id, "integration_type": parts[1], "name": body["name"], "status": "connected", "config": map[string]any{"webhook_url": "https://hooks.example.com/…1234"}, "routing": fakeRouting(body["routing"])}
 		writeJSON(w, 200, map[string]any{"connection_id": id, "signing_secret": "whsec_test"})
 	case r.Method == "PUT" && len(parts) == 3 && parts[1] == "connections":
 		connection := f.connections[parts[2]]
 		connection["name"] = body["name"]
-		connection["routing"] = body["routing"]
+		if routing, ok := body["routing"]; ok {
+			connection["routing"] = fakeRouting(routing)
+		}
 		writeJSON(w, 200, map[string]any{"connection_id": parts[2]})
 	case r.Method == "DELETE" && len(parts) == 3 && parts[1] == "connections":
 		delete(f.connections, parts[2])
@@ -217,6 +223,58 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "no fake route for " + r.Method + " " + r.URL.Path})
 	}
+}
+
+// fakeTypedConfig stores a dns / multistep config the way the server's
+// prepareTypedMonitorConfig does: DNS host name and record type normalized
+// (record type A by default), multi-step secrets removed (sealed elsewhere)
+// and their names listed in secret_names.
+func fakeTypedConfig(monitorType string, incoming map[string]any) map[string]any {
+	config := map[string]any{}
+	for k, v := range incoming {
+		config[k] = v
+	}
+	switch monitorType {
+	case "dns":
+		hostname, _ := config["hostname"].(string)
+		config["hostname"] = strings.TrimRight(strings.ToLower(strings.TrimSpace(hostname)), ".")
+		recordType, _ := config["record_type"].(string)
+		if recordType == "" {
+			recordType = "a"
+		}
+		config["record_type"] = strings.ToUpper(recordType)
+	case "multistep":
+		names := []string{}
+		if secrets, ok := config["secrets"].(map[string]any); ok {
+			for name, value := range secrets {
+				if value != nil {
+					names = append(names, name)
+				}
+			}
+		}
+		sort.Strings(names)
+		delete(config, "secrets")
+		config["secret_names"] = names
+	}
+	return config
+}
+
+// fakeRouting stores routing the way the server's normalizeRouting does:
+// an unknown scope is "all" and only the id list of the scope is kept.
+func fakeRouting(value any) map[string]any {
+	raw, _ := value.(map[string]any)
+	scope, _ := raw["scope"].(string)
+	if scope != "groups" && scope != "monitors" {
+		scope = "all"
+	}
+	ids := func(key, keyScope string) []any {
+		list, _ := raw[key].([]any)
+		if list == nil || scope != keyScope {
+			return []any{}
+		}
+		return list
+	}
+	return map[string]any{"scope": scope, "group_ids": ids("group_ids", "groups"), "monitor_ids": ids("monitor_ids", "monitors"), "min_severity": "down"}
 }
 
 // sameRegionSet reports whether two region lists (as decoded JSON) hold the same codes.

@@ -2,7 +2,9 @@ package provider
 
 import (
 	"context"
+	"fmt"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -18,10 +20,21 @@ import (
 )
 
 var (
-	_ resource.Resource                = (*alertChannelResource)(nil)
-	_ resource.ResourceWithConfigure   = (*alertChannelResource)(nil)
-	_ resource.ResourceWithImportState = (*alertChannelResource)(nil)
+	_ resource.Resource                   = (*alertChannelResource)(nil)
+	_ resource.ResourceWithConfigure      = (*alertChannelResource)(nil)
+	_ resource.ResourceWithImportState    = (*alertChannelResource)(nil)
+	_ resource.ResourceWithValidateConfig = (*alertChannelResource)(nil)
 )
+
+// Routing scopes of a connection (backend IntegrationRouting.scope).
+const (
+	routingScopeAll      = "all"
+	routingScopeGroups   = "groups"
+	routingScopeMonitors = "monitors"
+)
+
+// The API accepts at most this many group or monitor ids per connection.
+const maxRoutingTargets = 500
 
 func NewAlertChannelResource() resource.Resource { return &alertChannelResource{} }
 
@@ -35,6 +48,7 @@ type alertChannelModel struct {
 	Name          types.String `tfsdk:"name"`
 	Config        types.Map    `tfsdk:"config"`
 	RoutingScope  types.String `tfsdk:"routing_scope"`
+	GroupIDs      types.Set    `tfsdk:"group_ids"`
 	MonitorIDs    types.Set    `tfsdk:"monitor_ids"`
 	Status        types.String `tfsdk:"status"`
 	SigningSecret types.String `tfsdk:"signing_secret"`
@@ -71,16 +85,26 @@ func (r *alertChannelResource) Schema(_ context.Context, _ resource.SchemaReques
 				Sensitive:   true,
 			},
 			"routing_scope": schema.StringAttribute{
-				MarkdownDescription: "`all` (every monitor, default) or `monitors` (only `monitor_ids`).",
-				Optional:            true,
-				Computed:            true,
-				Default:             stringdefault.StaticString("all"),
-				Validators:          []validator.String{stringvalidator.OneOf("all", "monitors")},
+				MarkdownDescription: "Which monitors this channel alerts for: `all` (every monitor, default), `groups` (monitors in the monitor groups listed in `group_ids`) " +
+					"or `monitors` (only the monitors listed in `monitor_ids`).",
+				Optional:   true,
+				Computed:   true,
+				Default:    stringdefault.StaticString(routingScopeAll),
+				Validators: []validator.String{stringvalidator.OneOf(routingScopeAll, routingScopeGroups, routingScopeMonitors)},
+			},
+			"group_ids": schema.SetAttribute{
+				MarkdownDescription: "Monitor group ids (UUIDs, up to 500) this channel alerts for. Required when `routing_scope = \"groups\"`, not allowed otherwise. " +
+					"Monitors that are not in a group never match. Every group must exist in the workspace.",
+				ElementType: types.StringType,
+				Optional:    true,
+				Validators:  routingTargetValidators("monitor group ids"),
 			},
 			"monitor_ids": schema.SetAttribute{
-				MarkdownDescription: "Monitors this channel alerts for when `routing_scope = \"monitors\"`.",
-				ElementType:         types.StringType,
-				Optional:            true,
+				MarkdownDescription: "Monitor ids (UUIDs, up to 500) this channel alerts for. Required when `routing_scope = \"monitors\"`, not allowed otherwise. " +
+					"Every monitor must exist in the workspace.",
+				ElementType: types.StringType,
+				Optional:    true,
+				Validators:  routingTargetValidators("monitor ids"),
 			},
 			"status": schema.StringAttribute{
 				MarkdownDescription: "Connection status reported by SutramX.",
@@ -97,6 +121,45 @@ func (r *alertChannelResource) Schema(_ context.Context, _ resource.SchemaReques
 	}
 }
 
+func routingTargetValidators(what string) []validator.Set {
+	return []validator.Set{
+		setvalidator.SizeAtMost(maxRoutingTargets),
+		setvalidator.ValueStringsAre(stringvalidator.RegexMatches(uuidPattern, what+" are UUIDs")),
+	}
+}
+
+// ValidateConfig checks that the id list matching routing_scope is set and
+// the other one is not: the API keeps only the list of the chosen scope, so
+// any other combination could never be read back as configured.
+func (r *alertChannelResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var config alertChannelModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	if resp.Diagnostics.HasError() || config.RoutingScope.IsUnknown() {
+		return
+	}
+	scope := routingScopeAll
+	if !config.RoutingScope.IsNull() {
+		scope = config.RoutingScope.ValueString()
+	}
+	for _, list := range []struct {
+		attribute string
+		scope     string
+		value     types.Set
+	}{
+		{"group_ids", routingScopeGroups, config.GroupIDs},
+		{"monitor_ids", routingScopeMonitors, config.MonitorIDs},
+	} {
+		switch {
+		case scope == list.scope && list.value.IsNull():
+			resp.Diagnostics.AddAttributeError(path.Root(list.attribute), "Missing "+list.attribute,
+				fmt.Sprintf("%s is required when routing_scope = %q.", list.attribute, list.scope))
+		case scope != list.scope && !list.value.IsNull():
+			resp.Diagnostics.AddAttributeError(path.Root(list.attribute), "Unexpected "+list.attribute,
+				fmt.Sprintf("%s can only be set when routing_scope = %q (routing_scope is %q).", list.attribute, list.scope, scope))
+		}
+	}
+}
+
 func (r *alertChannelResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
 	r.client = configureClient(req, resp)
 }
@@ -109,19 +172,25 @@ func (r *alertChannelResource) body(ctx context.Context, plan alertChannelModel,
 		body[key] = value
 	}
 	body["name"] = plan.Name.ValueString()
-	routing := map[string]any{"scope": plan.RoutingScope.ValueString()}
-	if plan.RoutingScope.ValueString() == "monitors" {
-		var ids []string
-		if !plan.MonitorIDs.IsNull() && !plan.MonitorIDs.IsUnknown() {
-			diags.Append(plan.MonitorIDs.ElementsAs(ctx, &ids, false)...)
-		}
-		if ids == nil {
-			ids = []string{}
-		}
-		routing["monitor_ids"] = ids
+	scope := plan.RoutingScope.ValueString()
+	routing := map[string]any{"scope": scope}
+	switch scope {
+	case routingScopeGroups:
+		routing["group_ids"] = routingTargets(ctx, plan.GroupIDs, diags)
+	case routingScopeMonitors:
+		routing["monitor_ids"] = routingTargets(ctx, plan.MonitorIDs, diags)
 	}
 	body["routing"] = routing
 	return body
+}
+
+// routingTargets is the id list of a routing scope for the request body.
+func routingTargets(ctx context.Context, set types.Set, diags *diag.Diagnostics) []string {
+	ids := []string{}
+	if !set.IsNull() && !set.IsUnknown() {
+		diags.Append(set.ElementsAs(ctx, &ids, false)...)
+	}
+	return ids
 }
 
 // find returns the connection with the given id, or nil when it no longer exists.
@@ -144,15 +213,21 @@ func applyConnection(ctx context.Context, connection client.Connection, model *a
 	model.Type = types.StringValue(connection.IntegrationType)
 	model.Name = types.StringValue(connection.Name)
 	model.Status = types.StringValue(connection.Status)
+	// The scope is stored as reported (not folded into "all"), so routing
+	// changed in the dashboard shows up as drift instead of being
+	// overwritten silently by the next apply.
 	scope := connection.Routing.Scope
-	if scope != "monitors" {
-		scope = "all"
+	if scope == "" {
+		scope = routingScopeAll
 	}
 	model.RoutingScope = types.StringValue(scope)
-	if scope == "monitors" {
+	model.GroupIDs = types.SetNull(types.StringType)
+	model.MonitorIDs = types.SetNull(types.StringType)
+	switch scope {
+	case routingScopeGroups:
+		model.GroupIDs = stringSetValue(ctx, connection.Routing.GroupIDs, diags)
+	case routingScopeMonitors:
 		model.MonitorIDs = stringSetValue(ctx, connection.Routing.MonitorIDs, diags)
-	} else if !model.MonitorIDs.IsNull() {
-		model.MonitorIDs = types.SetNull(types.StringType)
 	}
 	if model.Config.IsNull() || model.Config.IsUnknown() {
 		// Imported: secrets cannot be read back; config must be set in HCL.
