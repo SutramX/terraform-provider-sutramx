@@ -49,6 +49,17 @@ func normalizeJSON(raw string) (string, error) {
 	return string(out), nil
 }
 
+// canonicalJSON is raw in the form Terraform's jsonencode() writes (object
+// keys sorted at every level, no whitespace, <, > and & escaped), or raw
+// unchanged when it is not valid JSON.
+func canonicalJSON(raw string) string {
+	normalized, err := normalizeJSON(raw)
+	if err != nil {
+		return raw
+	}
+	return normalized
+}
+
 // jsonEqual reports whether two JSON documents are semantically equal.
 func jsonEqual(a, b string) bool {
 	na, errA := normalizeJSON(a)

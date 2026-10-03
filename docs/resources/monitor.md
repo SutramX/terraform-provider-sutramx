@@ -18,7 +18,7 @@ resource "sutramx_monitor" "website" {
   name             = "Website"
   url              = "https://www.example.com"
   interval_seconds = 60
-  regions          = ["bom", "sin", "fra"]
+  regions          = ["fra1", "usa-az-probe"]
   tags             = ["prod", "web"]
   config_json = jsonencode({
     timeout               = 10000
@@ -61,11 +61,11 @@ output "nightly_job_heartbeat_url" {
 
 ### Optional
 
-- `config_json` (String) Type-specific settings as a JSON object, e.g. `jsonencode({ timeout = 10000, expected_status_codes = [200] })`. Managed as a whole when set; left untouched when omitted. Cron monitors need `cron_expression`; ping/port/UDP monitors need `host` (and `port`).
+- `config_json` (String) Type-specific settings as a JSON object, e.g. `jsonencode({ timeout = 10000, expected_status_codes = [200] })`. Managed as a whole when set; left untouched when omitted (it then shows the stored settings, in `jsonencode` form). Cron monitors need `cron_expression`; ping/port/UDP monitors need `host` (and `port`). Stored credentials (sensitive headers, tokens, passwords) are read back masked as `[REDACTED]`.
 - `interval_seconds` (Number) Seconds between checks (15-900, not below the plan minimum). Defaults to the plan default.
 - `key` (String) Stable key, unique in the workspace (the same `key` sutramx.yml uses). Creates are idempotent by key. Generated (`tf-...`) when not set. Letters, digits and `. _ : / -`, up to 128 characters.
 - `paused` (Boolean) Pause checks. Defaults to `false`.
-- `regions` (List of String) Probe location codes (see the `sutramx_regions` data source). Omit to use the plan's default locations.
+- `regions` (Set of String) Probe location codes (see the `sutramx_regions` data source). Order does not matter. Omit to use the plan's default locations.
 - `tags` (Set of String) Tags (stored lower-case). Left untouched when omitted.
 - `type` (String) Monitor type: `http`, `api`, `ping`, `port`, `udp` or `cron` (or a newer type the account supports). Changing it replaces the monitor.
 - `url` (String) Target URL for `http` and `api` monitors. Ping, port and UDP monitors use `host` in `config_json`.

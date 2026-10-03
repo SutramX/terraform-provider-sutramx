@@ -42,7 +42,7 @@ resource "sutramx_status_page" "public" {
 - `hide_powered_by` (Boolean) Remove SutramX branding (plans with white-label status pages).
 - `is_public` (Boolean) Whether the page is published.
 - `logo_url` (String) https:// image URL.
-- `monitors` (Attributes List) Monitors shown on the page, in display order. Omit to manage them in the dashboard. (see [below for nested schema](#nestedatt--monitors))
+- `monitors` (Attributes List) Monitors shown on the page, in display order. Omit to manage them in the dashboard (the attribute then shows the current list). (see [below for nested schema](#nestedatt--monitors))
 - `show_response_times` (Boolean)
 - `slug` (String) URL slug (lower-case letters, digits, hyphens). Generated from the title when not set.
 

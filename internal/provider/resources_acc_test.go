@@ -38,11 +38,10 @@ resource "sutramx_monitor" "test" {
 				),
 			},
 			{
-				ResourceName:            "sutramx_monitor.test",
-				ImportState:             true,
-				ImportStateId:           key,
-				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"config_json"},
+				ResourceName:      "sutramx_monitor.test",
+				ImportState:       true,
+				ImportStateId:     key,
+				ImportStateVerify: true,
 			},
 			{
 				Config: fmt.Sprintf(`
@@ -98,10 +97,9 @@ resource "sutramx_status_page" "test" {
 				),
 			},
 			{
-				ResourceName:            "sutramx_status_page.test",
-				ImportState:             true,
-				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"monitors"},
+				ResourceName:      "sutramx_status_page.test",
+				ImportState:       true,
+				ImportStateVerify: true,
 			},
 		},
 	})

@@ -7,7 +7,6 @@ import (
 	"regexp"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
-	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -57,7 +56,7 @@ type monitorModel struct {
 	IntervalSeconds types.Int64  `tfsdk:"interval_seconds"`
 	ConfigJSON      types.String `tfsdk:"config_json"`
 	Tags            types.Set    `tfsdk:"tags"`
-	Regions         types.List   `tfsdk:"regions"`
+	Regions         types.Set    `tfsdk:"regions"`
 	Paused          types.Bool   `tfsdk:"paused"`
 	HeartbeatURL    types.String `tfsdk:"heartbeat_url"`
 }
@@ -111,8 +110,12 @@ func (r *monitorResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			},
 			"config_json": schema.StringAttribute{
 				MarkdownDescription: "Type-specific settings as a JSON object, e.g. `jsonencode({ timeout = 10000, expected_status_codes = [200] })`. " +
-					"Managed as a whole when set; left untouched when omitted. Cron monitors need `cron_expression`; ping/port/UDP monitors need `host` (and `port`).",
-				Optional: true,
+					"Managed as a whole when set; left untouched when omitted (it then shows the stored settings, in `jsonencode` form). " +
+					"Cron monitors need `cron_expression`; ping/port/UDP monitors need `host` (and `port`). " +
+					"Stored credentials (sensitive headers, tokens, passwords) are read back masked as `[REDACTED]`.",
+				Optional:      true,
+				Computed:      true,
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
 			"tags": schema.SetAttribute{
 				MarkdownDescription: "Tags (stored lower-case). Left untouched when omitted.",
@@ -125,14 +128,13 @@ func (r *monitorResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 					setvalidator.ValueStringsAre(stringvalidator.RegexMatches(regexp.MustCompile(`^[^A-Z]{1,32}$`), "tags are stored lower-case: write them in lower case (1-32 characters)")),
 				},
 			},
-			"regions": schema.ListAttribute{
-				MarkdownDescription: "Probe location codes (see the `sutramx_regions` data source). Omit to use the plan's default locations.",
+			"regions": schema.SetAttribute{
+				MarkdownDescription: "Probe location codes (see the `sutramx_regions` data source). Order does not matter. Omit to use the plan's default locations.",
 				ElementType:         types.StringType,
 				Optional:            true,
-				Validators: []validator.List{
-					listvalidator.SizeAtLeast(1),
-					listvalidator.UniqueValues(),
-					listvalidator.ValueStringsAre(stringvalidator.RegexMatches(regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,19}$`), "region codes are lower-case, e.g. \"bom\"")),
+				Validators: []validator.Set{
+					setvalidator.SizeAtLeast(1),
+					setvalidator.ValueStringsAre(stringvalidator.RegexMatches(regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,19}$`), "region codes are lower-case, e.g. \"bom\"")),
 				},
 			},
 			"paused": schema.BoolAttribute{
@@ -156,8 +158,10 @@ func (r *monitorResource) Configure(_ context.Context, req resource.ConfigureReq
 }
 
 // spec builds the PUT /automation/monitors/:key body. Omitted optional
-// fields are not managed by the API (they keep their value).
-func (r *monitorResource) spec(ctx context.Context, plan monitorModel, diags *diag.Diagnostics) map[string]any {
+// fields are not managed by the API (they keep their value). config is sent
+// only when the configuration sets config_json: when it is omitted the plan
+// carries the stored settings (computed), which must not be written back.
+func (r *monitorResource) spec(ctx context.Context, plan monitorModel, configured types.String, diags *diag.Diagnostics) map[string]any {
 	body := map[string]any{
 		"name":   plan.Name.ValueString(),
 		"type":   plan.Type.ValueString(),
@@ -169,7 +173,7 @@ func (r *monitorResource) spec(ctx context.Context, plan monitorModel, diags *di
 	if !plan.IntervalSeconds.IsNull() && !plan.IntervalSeconds.IsUnknown() {
 		body["interval_seconds"] = plan.IntervalSeconds.ValueInt64()
 	}
-	if !plan.ConfigJSON.IsNull() && !plan.ConfigJSON.IsUnknown() {
+	if !configured.IsNull() && !plan.ConfigJSON.IsNull() && !plan.ConfigJSON.IsUnknown() {
 		var config map[string]any
 		if err := json.Unmarshal([]byte(plan.ConfigJSON.ValueString()), &config); err != nil {
 			diags.AddAttributeError(path.Root("config_json"), "Invalid config_json", "config_json must be a JSON object: "+err.Error())
@@ -193,7 +197,10 @@ func (r *monitorResource) spec(ctx context.Context, plan monitorModel, diags *di
 }
 
 // applyMonitor copies the API object into the model, keeping the user's
-// config_json formatting when it is semantically unchanged.
+// config_json formatting when it is semantically unchanged. Every attribute
+// is filled in, in the form a configuration writes it (config_json as
+// jsonencode() renders it, regions as a set), so an imported monitor plans
+// no changes against a configuration that describes it.
 func applyMonitor(ctx context.Context, monitor client.Monitor, model *monitorModel, diags *diag.Diagnostics) {
 	model.ID = types.StringValue(monitor.ID)
 	if monitor.ExternalID != nil && *monitor.ExternalID != "" {
@@ -216,23 +223,27 @@ func applyMonitor(ctx context.Context, monitor client.Monitor, model *monitorMod
 	model.Paused = types.BoolValue(!monitor.IsActive)
 	model.Tags = stringSetValue(ctx, monitor.Tags, diags)
 	if len(monitor.ProbeRegions) > 0 {
-		model.Regions = stringListValue(ctx, monitor.ProbeRegions, diags)
+		model.Regions = stringSetValue(ctx, monitor.ProbeRegions, diags)
 	} else {
-		model.Regions = types.ListNull(types.StringType)
+		model.Regions = types.SetNull(types.StringType)
 	}
 	if !model.ConfigJSON.IsNull() && !model.ConfigJSON.IsUnknown() {
 		remoteConfig := withoutKeys(monitor.Config, undeclaredKeys(model.ConfigJSON.ValueString(), serverManagedConfigKeys)...)
 		// Stored credentials come back masked: keep the configured values there.
 		remoteConfig = keepPriorSecrets(remoteConfig, model.ConfigJSON.ValueString())
 		if !jsonEqual(model.ConfigJSON.ValueString(), remoteConfig) {
-			model.ConfigJSON = types.StringValue(remoteConfig)
+			model.ConfigJSON = types.StringValue(canonicalJSON(remoteConfig))
 		}
+	} else {
+		// Not known yet (create, import): the stored settings without the
+		// owner-managed keys, which a configuration only sets deliberately.
+		model.ConfigJSON = types.StringValue(canonicalJSON(withoutKeys(monitor.Config, serverManagedConfigKeys...)))
 	}
 	model.HeartbeatURL = stringOrNull(monitor.HeartbeatURL)
 }
 
-func (r *monitorResource) upsert(ctx context.Context, key string, plan monitorModel, diags *diag.Diagnostics) *client.Monitor {
-	body := r.spec(ctx, plan, diags)
+func (r *monitorResource) upsert(ctx context.Context, key string, plan monitorModel, configured types.String, diags *diag.Diagnostics) *client.Monitor {
+	body := r.spec(ctx, plan, configured, diags)
 	if diags.HasError() {
 		return nil
 	}
@@ -250,11 +261,16 @@ func (r *monitorResource) Create(ctx context.Context, req resource.CreateRequest
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	var configured types.String
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("config_json"), &configured)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	key := plan.Key.ValueString()
 	if plan.Key.IsUnknown() || plan.Key.IsNull() || key == "" {
 		key = randomKey("tf-")
 	}
-	monitor := r.upsert(ctx, key, plan, &resp.Diagnostics)
+	monitor := r.upsert(ctx, key, plan, configured, &resp.Diagnostics)
 	if monitor == nil {
 		return
 	}
@@ -283,8 +299,10 @@ func (r *monitorResource) Read(ctx context.Context, req resource.ReadRequest, re
 
 func (r *monitorResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	var plan, state monitorModel
+	var configured types.String
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("config_json"), &configured)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -305,7 +323,7 @@ func (r *monitorResource) Update(ctx context.Context, req resource.UpdateRequest
 			return
 		}
 	}
-	monitor := r.upsert(ctx, key, plan, &resp.Diagnostics)
+	monitor := r.upsert(ctx, key, plan, configured, &resp.Diagnostics)
 	if monitor == nil {
 		return
 	}
@@ -324,9 +342,8 @@ func (r *monitorResource) Delete(ctx context.Context, req resource.DeleteRequest
 	}
 }
 
-// ImportState accepts a monitor id (UUID) or a monitor key. config_json is
-// filled in too (Read only tracks it once set), so a configuration that
-// matches the monitor plans no changes after the import.
+// ImportState accepts a monitor id (UUID) or a monitor key. Read then fills
+// in every attribute (config_json included) in configuration form.
 func (r *monitorResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	var monitor client.Monitor
 	if !uuidPattern.MatchString(req.ID) && !monitorKeyPattern.MatchString(req.ID) {
@@ -342,5 +359,4 @@ func (r *monitorResource) ImportState(ctx context.Context, req resource.ImportSt
 		return
 	}
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), monitor.ID)...)
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("config_json"), withoutKeys(monitor.Config, serverManagedConfigKeys...))...)
 }

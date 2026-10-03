@@ -21,7 +21,7 @@ resource "sutramx_monitor" "website" {
   key     = "web/home"
   name    = "Website"
   url     = "https://www.example.com"
-  regions = ["bom", "sin"]
+  regions = ["fra1", "usa-az-probe"]
 }
 
 resource "sutramx_status_page" "public" {
@@ -42,6 +42,7 @@ Create an API key in SutramX under **Settings → API keys** and set `SUTRAMX_AP
 - **Monitors** are written with the idempotent `PUT /automation/monitors/{key}` endpoint, the same one `sutramx.yml` uses, so a retried create never makes a duplicate. Without `key`, the provider generates one (`tf-...`). Optional fields you leave out (`config_json`, `tags`, `interval_seconds`) are left as they are on the server; `regions` left out means the plan's default locations. Changing `type` replaces the monitor. Importing a dashboard monitor gives it a key on the next apply.
 - **Status pages** are matched by id; `monitors` is the ordered list shown on the page (omit it to manage the list in the dashboard).
 - **Alert channels** are integration connections. Their `config` is stored encrypted and never read back, so Terraform cannot detect secret changes made in the dashboard.
+- **Import** fills in every attribute in the form a configuration writes it (`config_json` as `jsonencode()` renders it, `regions` as a set, a status page's `monitors` list), so a configuration describing the imported resource plans no changes. The exceptions are values the API never returns: an alert channel's `config` and monitor credentials (sensitive headers, tokens, URL passwords, read back as `[REDACTED]`). For those the first plan shows an in-place update that writes the configured values; nothing else changes.
 - **Maintenance windows and escalation policies** are read-only data sources. They silence or reroute alerts, so the API lets only the workspace owner create or change them from the dashboard; API keys (even automation keys) can list them.
 - Plan limits are enforced by the API exactly as in the dashboard; errors such as `ENTITLEMENT_LIMIT_REACHED` come back as Terraform diagnostics.
 

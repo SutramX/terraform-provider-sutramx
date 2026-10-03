@@ -108,7 +108,9 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			monitor["tags"] = lowered
 		}
-		if regions, ok := body["regions"]; ok {
+		if regions, ok := body["regions"]; ok && !sameRegionSet(monitor["probe_regions"], regions) {
+			// Like the server: the same set in another order is no change,
+			// so the stored order is kept.
 			monitor["probe_regions"] = regions
 		}
 		if paused, ok := body["paused"].(bool); ok {
@@ -135,6 +137,10 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			copied["config"] = config
+			if raw, ok := monitor["config"].(json.RawMessage); ok {
+				// Seeded as raw JSON to keep the server's (unsorted) key order.
+				copied["config"] = json.RawMessage(`{"notification_emails":["ops@example.com"],` + strings.TrimPrefix(string(raw), "{"))
+			}
 			writeJSON(w, 200, copied)
 			return
 		}
@@ -211,6 +217,34 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "no fake route for " + r.Method + " " + r.URL.Path})
 	}
+}
+
+// sameRegionSet reports whether two region lists (as decoded JSON) hold the same codes.
+func sameRegionSet(a, b any) bool {
+	toSet := func(value any) map[string]bool {
+		set := map[string]bool{}
+		switch list := value.(type) {
+		case []any:
+			for _, item := range list {
+				set[fmt.Sprint(item)] = true
+			}
+		case []string:
+			for _, item := range list {
+				set[item] = true
+			}
+		}
+		return set
+	}
+	setA, setB := toSet(a), toSet(b)
+	if len(setA) == 0 || len(setA) != len(setB) {
+		return false
+	}
+	for key := range setA {
+		if !setB[key] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestFakeAPILifecycle(t *testing.T) {
@@ -298,11 +332,10 @@ resource "sutramx_alert_channel" "ops" {
 				PlanOnly: true,
 			},
 			{
-				ResourceName:            "sutramx_monitor.web",
-				ImportState:             true,
-				ImportStateId:           "web/home",
-				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"config_json"},
+				ResourceName:      "sutramx_monitor.web",
+				ImportState:       true,
+				ImportStateId:     "web/home",
+				ImportStateVerify: true,
 			},
 			// Update in place: rename, pause, re-key, drop regions back to the plan default.
 			{

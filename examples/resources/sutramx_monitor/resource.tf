@@ -3,7 +3,7 @@ resource "sutramx_monitor" "website" {
   name             = "Website"
   url              = "https://www.example.com"
   interval_seconds = 60
-  regions          = ["bom", "sin", "fra"]
+  regions          = ["fra1", "usa-az-probe"]
   tags             = ["prod", "web"]
   config_json = jsonencode({
     timeout               = 10000

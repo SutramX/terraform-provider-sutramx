@@ -11,6 +11,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
@@ -99,8 +100,10 @@ func (r *statusPageResource) Schema(_ context.Context, _ resource.SchemaRequest,
 				PlanModifiers:       []planmodifier.Bool{boolplanmodifier.UseStateForUnknown()},
 			},
 			"monitors": schema.ListNestedAttribute{
-				MarkdownDescription: "Monitors shown on the page, in display order. Omit to manage them in the dashboard.",
+				MarkdownDescription: "Monitors shown on the page, in display order. Omit to manage them in the dashboard (the attribute then shows the current list).",
 				Optional:            true,
+				Computed:            true,
+				PlanModifiers:       []planmodifier.List{listplanmodifier.UseStateForUnknown()},
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
 						"monitor_id": schema.StringAttribute{Required: true, MarkdownDescription: "`sutramx_monitor.<name>.id`"},
@@ -146,12 +149,15 @@ func (r *statusPageResource) patchBody(plan statusPageModel, includeSlug bool) m
 	return body
 }
 
-func (r *statusPageResource) setMonitors(ctx context.Context, id string, plan statusPageModel, diags *diag.Diagnostics) {
-	if plan.Monitors.IsNull() || plan.Monitors.IsUnknown() {
+// setMonitors replaces the page's monitor list with the configured one. A
+// configuration without monitors leaves the list alone (the plan then holds
+// the current list, computed).
+func (r *statusPageResource) setMonitors(ctx context.Context, id string, configured types.List, diags *diag.Diagnostics) {
+	if configured.IsNull() || configured.IsUnknown() {
 		return
 	}
 	var entries []statusPageMonitorModel
-	diags.Append(plan.Monitors.ElementsAs(ctx, &entries, false)...)
+	diags.Append(configured.ElementsAs(ctx, &entries, false)...)
 	if diags.HasError() {
 		return
 	}
@@ -174,21 +180,20 @@ func applyStatusPage(ctx context.Context, page client.StatusPage, model *statusP
 	model.AccentColor = stringOrNull(page.AccentColor)
 	model.ShowResponseTimes = types.BoolValue(page.ShowResponseTimes)
 	model.HidePoweredBy = types.BoolValue(page.IsWhitelabel)
-	// Only track monitors when the configuration manages them.
-	if !model.Monitors.IsNull() {
-		values := make([]attr.Value, 0, len(page.Monitors))
-		for _, monitor := range page.Monitors {
-			object, d := types.ObjectValue(statusPageMonitorAttrTypes, map[string]attr.Value{
-				"monitor_id": types.StringValue(monitor.ID),
-				"section":    stringOrNull(monitor.Section),
-			})
-			diags.Append(d...)
-			values = append(values, object)
-		}
-		list, d := types.ListValue(types.ObjectType{AttrTypes: statusPageMonitorAttrTypes}, values)
+	// Always filled in (also when imported or not managed), so a
+	// configuration listing the page's monitors plans no changes.
+	values := make([]attr.Value, 0, len(page.Monitors))
+	for _, monitor := range page.Monitors {
+		object, d := types.ObjectValue(statusPageMonitorAttrTypes, map[string]attr.Value{
+			"monitor_id": types.StringValue(monitor.ID),
+			"section":    stringOrNull(monitor.Section),
+		})
 		diags.Append(d...)
-		model.Monitors = list
+		values = append(values, object)
 	}
+	list, d := types.ListValue(types.ObjectType{AttrTypes: statusPageMonitorAttrTypes}, values)
+	diags.Append(d...)
+	model.Monitors = list
 }
 
 func (r *statusPageResource) read(ctx context.Context, id string, model *statusPageModel, diags *diag.Diagnostics) bool {
@@ -206,7 +211,9 @@ func (r *statusPageResource) read(ctx context.Context, id string, model *statusP
 
 func (r *statusPageResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan statusPageModel
+	var configuredMonitors types.List
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("monitors"), &configuredMonitors)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -228,7 +235,7 @@ func (r *statusPageResource) Create(ctx context.Context, req resource.CreateRequ
 		apiErrorDiag(&resp.Diagnostics, "Could not configure the status page", err)
 		return
 	}
-	r.setMonitors(ctx, created.ID, plan, &resp.Diagnostics)
+	r.setMonitors(ctx, created.ID, configuredMonitors, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		_ = r.client.Delete(ctx, "/status/pages/"+client.PathEscape(created.ID))
 		return
@@ -252,8 +259,10 @@ func (r *statusPageResource) Read(ctx context.Context, req resource.ReadRequest,
 
 func (r *statusPageResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	var plan, state statusPageModel
+	var configuredMonitors types.List
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("monitors"), &configuredMonitors)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -263,7 +272,7 @@ func (r *statusPageResource) Update(ctx context.Context, req resource.UpdateRequ
 		apiErrorDiag(&resp.Diagnostics, "Could not update the status page", err)
 		return
 	}
-	r.setMonitors(ctx, id, plan, &resp.Diagnostics)
+	r.setMonitors(ctx, id, configuredMonitors, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
