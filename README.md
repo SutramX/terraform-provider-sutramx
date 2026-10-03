@@ -21,7 +21,7 @@ resource "sutramx_monitor" "website" {
   key     = "web/home"
   name    = "Website"
   url     = "https://www.example.com"
-  regions = ["fra1", "bom"] # see the sutramx_regions data source
+  regions = ["fra1", "usa-az-probe"] # see the sutramx_regions data source
 }
 
 resource "sutramx_status_page" "public" {
