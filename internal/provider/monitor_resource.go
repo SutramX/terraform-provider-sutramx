@@ -36,10 +36,17 @@ var (
 	uuidPattern       = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 )
 
-// Server-managed config keys (owner-only per-monitor recipients): ignored in
-// config_json unless the configuration sets them (which needs an owner or
-// automation-access key).
-var serverManagedConfigKeys = []string{"notification_emails"}
+// Server-managed config keys, ignored in config_json unless the
+// configuration sets them: notification_emails (owner-only per-monitor
+// recipients, which needs an owner or automation-access key to set) and
+// secret_names (the names of a multistep monitor's stored secrets, which the
+// server always writes).
+var serverManagedConfigKeys = []string{"notification_emails", "secret_names"}
+
+// Write-only config keys: accepted by the API but never stored in config or
+// returned. secrets ({NAME = value | null}) of multistep monitors are sealed
+// separately; the configured value is kept in state.
+var writeOnlyConfigKeys = []string{"secrets"}
 
 func NewMonitorResource() resource.Resource { return &monitorResource{} }
 
@@ -91,14 +98,16 @@ func (r *monitorResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				Validators:          []validator.String{stringvalidator.LengthBetween(1, 255)},
 			},
 			"type": schema.StringAttribute{
-				MarkdownDescription: "Monitor type: `http`, `api`, `ping`, `port`, `udp` or `cron` (or a newer type the account supports). Changing it replaces the monitor.",
-				Optional:            true,
-				Computed:            true,
-				Default:             stringdefault.StaticString("http"),
-				PlanModifiers:       []planmodifier.String{stringplanmodifier.RequiresReplace()},
+				MarkdownDescription: "Monitor type: `http` (default), `api`, `ping`, `port`, `udp`, `cron`, `dns` (DNS records) or `multistep` (multi-step API check). " +
+					"`dns` and `multistep` must be included in the workspace's plan, which also caps the steps of a multi-step check. " +
+					"Other values are passed to the API unchecked, so a type added to SutramX later works without a provider update. Changing it replaces the monitor.",
+				Optional:      true,
+				Computed:      true,
+				Default:       stringdefault.StaticString("http"),
+				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
 			},
 			"url": schema.StringAttribute{
-				MarkdownDescription: "Target URL for `http` and `api` monitors. Ping, port and UDP monitors use `host` in `config_json`.",
+				MarkdownDescription: "Target URL for `http` and `api` monitors. Ping, port and UDP monitors use `host` in `config_json`, DNS monitors `hostname`, multi-step checks a `url` per step.",
 				Optional:            true,
 			},
 			"interval_seconds": schema.Int64Attribute{
@@ -111,21 +120,24 @@ func (r *monitorResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			"config_json": schema.StringAttribute{
 				MarkdownDescription: "Type-specific settings as a JSON object, e.g. `jsonencode({ timeout = 10000, expected_status_codes = [200] })`. " +
 					"Managed as a whole when set; left untouched when omitted (it then shows the stored settings, in `jsonencode` form). " +
-					"Cron monitors need `cron_expression`; ping/port/UDP monitors need `host` (and `port`). " +
-					"Stored credentials (sensitive headers, tokens, passwords) are read back masked as `[REDACTED]`.",
+					"Cron monitors need `cron_expression`; ping/port/UDP monitors need `host` (and `port`); " +
+					"DNS monitors need `hostname` (plus optional `record_type`, `dns_mode`, `expected_values`, ...); multi-step checks need `steps`. " +
+					"Stored credentials (sensitive headers, tokens, passwords) are read back masked as `[REDACTED]`. " +
+					"Multi-step `secrets` are write-only: the configured value is kept in state and changes made outside Terraform are not detected.",
 				Optional:      true,
 				Computed:      true,
 				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
 			"tags": schema.SetAttribute{
-				MarkdownDescription: "Tags (stored lower-case). Left untouched when omitted.",
-				ElementType:         types.StringType,
-				Optional:            true,
-				Computed:            true,
-				PlanModifiers:       []planmodifier.Set{setplanmodifier.UseStateForUnknown()},
+				MarkdownDescription: "Tags, up to 20, each 1-32 characters. SutramX stores tags lower-case and trimmed, so they must be written that way: " +
+					"a tag with upper-case letters or surrounding spaces is a validation error at plan time. Left untouched when omitted.",
+				ElementType:   types.StringType,
+				Optional:      true,
+				Computed:      true,
+				PlanModifiers: []planmodifier.Set{setplanmodifier.UseStateForUnknown()},
 				Validators: []validator.Set{
 					setvalidator.SizeAtMost(20),
-					setvalidator.ValueStringsAre(stringvalidator.RegexMatches(regexp.MustCompile(`^[^A-Z]{1,32}$`), "tags are stored lower-case: write them in lower case (1-32 characters)")),
+					setvalidator.ValueStringsAre(tagValidator{}),
 				},
 			},
 			"regions": schema.SetAttribute{
@@ -231,6 +243,11 @@ func applyMonitor(ctx context.Context, monitor client.Monitor, model *monitorMod
 		remoteConfig := withoutKeys(monitor.Config, undeclaredKeys(model.ConfigJSON.ValueString(), serverManagedConfigKeys)...)
 		// Stored credentials come back masked: keep the configured values there.
 		remoteConfig = keepPriorSecrets(remoteConfig, model.ConfigJSON.ValueString())
+		// Write-only keys never come back: keep the configured values.
+		remoteConfig = keepPriorKeys(remoteConfig, model.ConfigJSON.ValueString(), writeOnlyConfigKeys...)
+		if monitor.Type == "dns" {
+			remoteConfig = keepPriorDNSSpelling(remoteConfig, model.ConfigJSON.ValueString())
+		}
 		if !jsonEqual(model.ConfigJSON.ValueString(), remoteConfig) {
 			model.ConfigJSON = types.StringValue(canonicalJSON(remoteConfig))
 		}

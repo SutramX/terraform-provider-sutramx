@@ -7,9 +7,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/sutramx/terraform-provider-sutramx/internal/client"
@@ -129,4 +132,101 @@ func stringSetValue(ctx context.Context, values []string, diags *diag.Diagnostic
 
 func apiErrorDiag(diags *diag.Diagnostics, summary string, err error) {
 	diags.AddError(summary, err.Error())
+}
+
+// keepPriorKeys returns the remote config JSON object with each of keys
+// copied from prior when the remote object lacks it (write-only values the
+// API accepts but never returns).
+func keepPriorKeys(remote, prior string, keys ...string) string {
+	var remoteObject, priorObject map[string]json.RawMessage
+	if json.Unmarshal([]byte(remote), &remoteObject) != nil || json.Unmarshal([]byte(prior), &priorObject) != nil || remoteObject == nil {
+		return remote
+	}
+	changed := false
+	for _, key := range keys {
+		value, inPrior := priorObject[key]
+		if _, inRemote := remoteObject[key]; inPrior && !inRemote {
+			remoteObject[key] = value
+			changed = true
+		}
+	}
+	if !changed {
+		return remote
+	}
+	out, err := json.Marshal(remoteObject)
+	if err != nil {
+		return remote
+	}
+	return string(out)
+}
+
+// keepPriorDNSSpelling returns the remote config of a DNS monitor with the
+// configured hostname and record_type when they differ only in the way the
+// API normalizes them (host name lower-cased without trailing dots, record
+// type upper-cased, A when not set), so writing "Example.com." or "a", or
+// leaving record_type out, is not a diff.
+func keepPriorDNSSpelling(remote, prior string) string {
+	var remoteObject, priorObject map[string]json.RawMessage
+	if json.Unmarshal([]byte(remote), &remoteObject) != nil || json.Unmarshal([]byte(prior), &priorObject) != nil || remoteObject == nil {
+		return remote
+	}
+	normalize := func(key, value string) string {
+		value = strings.TrimSpace(value)
+		if key == "hostname" {
+			return strings.TrimRight(strings.ToLower(value), ".")
+		}
+		return strings.ToUpper(value)
+	}
+	changed := false
+	// The API stores the default record type (A) when none is given.
+	if _, configured := priorObject["record_type"]; !configured && string(remoteObject["record_type"]) == `"A"` {
+		delete(remoteObject, "record_type")
+		changed = true
+	}
+	for _, key := range []string{"hostname", "record_type"} {
+		var remoteValue, priorValue string
+		if json.Unmarshal(remoteObject[key], &remoteValue) != nil || json.Unmarshal(priorObject[key], &priorValue) != nil {
+			continue
+		}
+		if remoteValue != priorValue && normalize(key, priorValue) == remoteValue {
+			remoteObject[key] = priorObject[key]
+			changed = true
+		}
+	}
+	if !changed {
+		return remote
+	}
+	out, err := json.Marshal(remoteObject)
+	if err != nil {
+		return remote
+	}
+	return string(out)
+}
+
+// tagValidator accepts a monitor tag in the form SutramX stores it: 1-32
+// characters, lower-case, no surrounding whitespace. Anything else would be
+// rewritten by the API and could never match the configuration.
+var _ validator.String = tagValidator{}
+
+type tagValidator struct{}
+
+func (tagValidator) Description(_ context.Context) string {
+	return "tags are 1-32 characters, lower-case, without surrounding spaces"
+}
+
+func (v tagValidator) MarkdownDescription(ctx context.Context) string { return v.Description(ctx) }
+
+func (tagValidator) ValidateString(_ context.Context, req validator.StringRequest, resp *validator.StringResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	tag := req.ConfigValue.ValueString()
+	switch length := utf8.RuneCountInString(tag); {
+	case strings.TrimSpace(tag) != tag:
+		resp.Diagnostics.AddAttributeError(req.Path, "Invalid tag", fmt.Sprintf("Tag %q has leading or trailing spaces; SutramX trims them, so write the tag without them.", tag))
+	case length < 1 || length > 32:
+		resp.Diagnostics.AddAttributeError(req.Path, "Invalid tag", fmt.Sprintf("Tag %q must be 1-32 characters.", tag))
+	case strings.ToLower(tag) != tag:
+		resp.Diagnostics.AddAttributeError(req.Path, "Invalid tag", fmt.Sprintf("Tag %q has upper-case letters; SutramX stores tags lower-case, so write it as %q.", tag, strings.ToLower(tag)))
+	}
 }

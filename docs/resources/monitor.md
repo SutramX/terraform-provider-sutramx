@@ -18,7 +18,7 @@ resource "sutramx_monitor" "website" {
   name             = "Website"
   url              = "https://www.example.com"
   interval_seconds = 60
-  regions          = ["fra1", "usa-az-probe"]
+  regions          = ["fra1", "bom"] # codes from the sutramx_regions data source
   tags             = ["prod", "web"]
   config_json = jsonencode({
     timeout               = 10000
@@ -46,6 +46,51 @@ resource "sutramx_monitor" "nightly_job" {
   })
 }
 
+# DNS records: alert when the MX records differ from the expected ones.
+resource "sutramx_monitor" "mail_dns" {
+  key  = "dns/mx"
+  name = "Mail DNS"
+  type = "dns"
+  config_json = jsonencode({
+    hostname        = "example.com"
+    record_type     = "MX"
+    dns_mode        = "expected"
+    expected_values = ["10 mail.example.com"]
+  })
+}
+
+# Multi-step API check: log in, then call an authenticated endpoint with the
+# extracted token. secrets are write-only (sealed by SutramX, never read back).
+resource "sutramx_monitor" "checkout" {
+  key  = "api/checkout"
+  name = "Checkout API"
+  type = "multistep"
+  config_json = jsonencode({
+    steps = [
+      {
+        name    = "Log in"
+        method  = "POST"
+        url     = "https://api.example.com/login"
+        headers = { "Content-Type" = "application/json" }
+        body    = jsonencode({ api_key = "{{secrets.API_KEY}}" })
+        extract = [{ name = "token", source = "json", expression = "$.token" }]
+      },
+      {
+        name                  = "Cart"
+        url                   = "https://api.example.com/cart"
+        headers               = { Authorization = "Bearer {{token}}" }
+        expected_status_codes = [200]
+      },
+    ]
+    secrets = { API_KEY = var.checkout_api_key }
+  })
+}
+
+variable "checkout_api_key" {
+  type      = string
+  sensitive = true
+}
+
 output "nightly_job_heartbeat_url" {
   value     = sutramx_monitor.nightly_job.heartbeat_url
   sensitive = true
@@ -61,14 +106,14 @@ output "nightly_job_heartbeat_url" {
 
 ### Optional
 
-- `config_json` (String) Type-specific settings as a JSON object, e.g. `jsonencode({ timeout = 10000, expected_status_codes = [200] })`. Managed as a whole when set; left untouched when omitted (it then shows the stored settings, in `jsonencode` form). Cron monitors need `cron_expression`; ping/port/UDP monitors need `host` (and `port`). Stored credentials (sensitive headers, tokens, passwords) are read back masked as `[REDACTED]`.
+- `config_json` (String) Type-specific settings as a JSON object, e.g. `jsonencode({ timeout = 10000, expected_status_codes = [200] })`. Managed as a whole when set; left untouched when omitted (it then shows the stored settings, in `jsonencode` form). Cron monitors need `cron_expression`; ping/port/UDP monitors need `host` (and `port`); DNS monitors need `hostname` (plus optional `record_type`, `dns_mode`, `expected_values`, ...); multi-step checks need `steps`. Stored credentials (sensitive headers, tokens, passwords) are read back masked as `[REDACTED]`. Multi-step `secrets` are write-only: the configured value is kept in state and changes made outside Terraform are not detected.
 - `interval_seconds` (Number) Seconds between checks (15-900, not below the plan minimum). Defaults to the plan default.
 - `key` (String) Stable key, unique in the workspace (the same `key` sutramx.yml uses). Creates are idempotent by key. Generated (`tf-...`) when not set. Letters, digits and `. _ : / -`, up to 128 characters.
 - `paused` (Boolean) Pause checks. Defaults to `false`.
 - `regions` (Set of String) Probe location codes (see the `sutramx_regions` data source). Order does not matter. Omit to use the plan's default locations.
-- `tags` (Set of String) Tags (stored lower-case). Left untouched when omitted.
-- `type` (String) Monitor type: `http`, `api`, `ping`, `port`, `udp` or `cron` (or a newer type the account supports). Changing it replaces the monitor.
-- `url` (String) Target URL for `http` and `api` monitors. Ping, port and UDP monitors use `host` in `config_json`.
+- `tags` (Set of String) Tags, up to 20, each 1-32 characters. SutramX stores tags lower-case and trimmed, so they must be written that way: a tag with upper-case letters or surrounding spaces is a validation error at plan time. Left untouched when omitted.
+- `type` (String) Monitor type: `http` (default), `api`, `ping`, `port`, `udp`, `cron`, `dns` (DNS records) or `multistep` (multi-step API check). `dns` and `multistep` must be included in the workspace's plan, which also caps the steps of a multi-step check. Other values are passed to the API unchecked, so a type added to SutramX later works without a provider update. Changing it replaces the monitor.
+- `url` (String) Target URL for `http` and `api` monitors. Ping, port and UDP monitors use `host` in `config_json`, DNS monitors `hostname`, multi-step checks a `url` per step.
 
 ### Read-Only
 

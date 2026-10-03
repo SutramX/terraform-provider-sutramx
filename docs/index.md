@@ -9,6 +9,12 @@ description: |-
 
 Manage [SutramX](https://sutramx.com) uptime monitors, status pages and alert channels, and read maintenance windows and escalation policies. Authenticates with a workspace API key; every resource lives in the workspace the key belongs to.
 
+| | |
+|---|---|
+| Resources | `sutramx_monitor`, `sutramx_status_page`, `sutramx_alert_channel` |
+| Data sources | `sutramx_regions`, `sutramx_plans`, `sutramx_maintenance_windows`, `sutramx_escalation_policies` |
+| Import | monitors by id or key, status pages and alert channels by id |
+
 ## Example Usage
 
 ```terraform

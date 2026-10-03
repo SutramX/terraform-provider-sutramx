@@ -21,7 +21,7 @@ resource "sutramx_monitor" "website" {
   key     = "web/home"
   name    = "Website"
   url     = "https://www.example.com"
-  regions = ["fra1", "usa-az-probe"]
+  regions = ["fra1", "bom"] # see the sutramx_regions data source
 }
 
 resource "sutramx_status_page" "public" {
@@ -40,8 +40,10 @@ Create an API key in SutramX under **Settings → API keys** and set `SUTRAMX_AP
 ## How it maps to SutramX
 
 - **Monitors** are written with the idempotent `PUT /automation/monitors/{key}` endpoint, the same one `sutramx.yml` uses, so a retried create never makes a duplicate. Without `key`, the provider generates one (`tf-...`). Optional fields you leave out (`config_json`, `tags`, `interval_seconds`) are left as they are on the server; `regions` left out means the plan's default locations. Changing `type` replaces the monitor. Importing a dashboard monitor gives it a key on the next apply.
+- **Monitor types**: `http` (default), `api`, `ping`, `port`, `udp`, `cron`, `dns` and `multistep`. Type-specific settings go in `config_json` (`hostname`/`record_type` for DNS, `steps` for multi-step checks). Multi-step `secrets` are write-only: the configured value is kept in state and sent on apply, but never read back. `dns` and `multistep` must be included in your plan.
+- **Tags** are stored lower-case and trimmed, so a tag with upper-case letters or surrounding spaces is rejected at plan time with a validation error (it would never match what the API stores). Up to 20 tags of 1-32 characters each.
 - **Status pages** are matched by id; `monitors` is the ordered list shown on the page (omit it to manage the list in the dashboard).
-- **Alert channels** are integration connections. Their `config` is stored encrypted and never read back, so Terraform cannot detect secret changes made in the dashboard.
+- **Alert channels** are integration connections. Their `config` is stored encrypted and never read back, so Terraform cannot detect secret changes made in the dashboard. Routing (`routing_scope` `all`, `groups` with `group_ids`, or `monitors` with `monitor_ids`) is read back, so routing changed in the dashboard shows up as drift in the plan.
 - **Import** fills in every attribute in the form a configuration writes it (`config_json` as `jsonencode()` renders it, `regions` as a set, a status page's `monitors` list), so a configuration describing the imported resource plans no changes. The exceptions are values the API never returns: an alert channel's `config` and monitor credentials (sensitive headers, tokens, URL passwords, read back as `[REDACTED]`). For those the first plan shows an in-place update that writes the configured values; nothing else changes.
 - **Maintenance windows and escalation policies** are read-only data sources. They silence or reroute alerts, so the API lets only the workspace owner create or change them from the dashboard; API keys (even automation keys) can list them.
 - Plan limits are enforced by the API exactly as in the dashboard; errors such as `ENTITLEMENT_LIMIT_REACHED` come back as Terraform diagnostics.
@@ -64,7 +66,7 @@ Acceptance test environment:
 | Variable | |
 |---|---|
 | `SUTRAMX_API_KEY` | key for a disposable workspace (tests create and delete resources) |
-| `SUTRAMX_API_URL` | optional, e.g. a staging API |
+| `SUTRAMX_API_URL` | optional; defaults to `https://api.sutramx.com` |
 | `SUTRAMX_ACC_ALERT_CHANNELS=1` and `SUTRAMX_ACC_WEBHOOK_URL` | also test `sutramx_alert_channel` (automation key required) |
 
 ### Local use before the registry release
