@@ -149,9 +149,10 @@ func (r *monitorResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				},
 			},
 			"regions": schema.SetAttribute{
-				MarkdownDescription: "Probe location codes (see the `sutramx_regions` data source). Order does not matter. Omit to use the plan's default locations.",
-				ElementType:         types.StringType,
-				Optional:            true,
+				MarkdownDescription: "Probe location codes (see the `sutramx_regions` data source). Order does not matter. Omit to use the plan's default locations. " +
+					"Not allowed for `cron` (heartbeat) monitors, which are not checked from locations.",
+				ElementType: types.StringType,
+				Optional:    true,
 				Validators: []validator.Set{
 					setvalidator.SizeAtLeast(1),
 					setvalidator.ValueStringsAre(stringvalidator.RegexMatches(regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,19}$`), "region codes are lower-case, e.g. \"bom\"")),
@@ -177,12 +178,18 @@ func (r *monitorResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 // cannot clear it.
 var urlMonitorTypes = map[string]bool{"http": true, "api": true}
 
+// cronMonitorType is the heartbeat monitor: it has no probe locations and the
+// API refuses regions for it.
+const cronMonitorType = "cron"
+
 // ValidateConfig rejects combinations the API refuses or cannot keep as
 // configured.
 func (r *monitorResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
 	var monitorType, url types.String
+	var regions types.Set
 	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("type"), &monitorType)...)
 	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("url"), &url)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("regions"), &regions)...)
 	if resp.Diagnostics.HasError() || monitorType.IsUnknown() {
 		return
 	}
@@ -193,6 +200,11 @@ func (r *monitorResource) ValidateConfig(ctx context.Context, req resource.Valid
 	if urlMonitorTypes[kind] && url.IsNull() {
 		resp.Diagnostics.AddAttributeError(path.Root("url"), "Missing url",
 			fmt.Sprintf("url is required for %s monitors.", kind))
+	}
+	// An unknown set may still turn out null, so only a known one is refused.
+	if kind == cronMonitorType && !regions.IsNull() && !regions.IsUnknown() {
+		resp.Diagnostics.AddAttributeError(path.Root("regions"), "Unexpected regions",
+			"Cron (heartbeat) monitors are not checked from probe locations: your job calls the heartbeat URL. Remove regions.")
 	}
 }
 
@@ -229,9 +241,18 @@ func (r *monitorResource) spec(ctx context.Context, plan monitorModel, configure
 		diags.Append(plan.Tags.ElementsAs(ctx, &tags, false)...)
 		body["tags"] = tags
 	}
-	if plan.Regions.IsNull() {
+	switch {
+	case plan.Type.ValueString() == cronMonitorType:
+		// No locations: regions (even null) are never sent for a heartbeat
+		// monitor. Set regions are caught by ValidateConfig unless the type
+		// was unknown then.
+		if !plan.Regions.IsNull() {
+			diags.AddAttributeError(path.Root("regions"), "Unexpected regions", "Cron (heartbeat) monitors are not checked from probe locations. Remove regions.")
+			return nil
+		}
+	case plan.Regions.IsNull():
 		body["regions"] = nil
-	} else if !plan.Regions.IsUnknown() {
+	case !plan.Regions.IsUnknown():
 		var regions []string
 		diags.Append(plan.Regions.ElementsAs(ctx, &regions, false)...)
 		body["regions"] = regions
@@ -265,7 +286,7 @@ func applyMonitor(ctx context.Context, monitor client.Monitor, model *monitorMod
 	model.IntervalSeconds = types.Int64Value(monitor.IntervalSeconds)
 	model.Paused = types.BoolValue(!monitor.IsActive)
 	model.Tags = stringSetValue(ctx, monitor.Tags, diags)
-	if len(monitor.ProbeRegions) > 0 {
+	if len(monitor.ProbeRegions) > 0 && monitor.Type != cronMonitorType {
 		model.Regions = stringSetValue(ctx, monitor.ProbeRegions, diags)
 	} else {
 		model.Regions = types.SetNull(types.StringType)

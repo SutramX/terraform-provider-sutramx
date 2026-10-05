@@ -135,3 +135,66 @@ func TestMonitorCredentialAttributesAreSensitive(t *testing.T) {
 		}
 	}
 }
+
+// Cron (heartbeat) monitors have no probe locations and the API refuses
+// regions for them: set regions are a plan-time error, regions are never
+// sent for them, and state keeps regions null.
+func TestCronMonitorRegions(t *testing.T) {
+	regions := func(values ...string) tftypes.Value {
+		items := make([]tftypes.Value, 0, len(values))
+		for _, value := range values {
+			items = append(items, str(value))
+		}
+		return tftypes.NewValue(tftypes.Set{ElementType: tftypes.String}, items)
+	}
+	cron := map[string]tftypes.Value{"name": str("Nightly"), "type": str("cron")}
+	withRegions := map[string]tftypes.Value{"name": str("Nightly"), "type": str("cron"), "regions": regions("fra1")}
+	unknownRegions := map[string]tftypes.Value{"name": str("Nightly"), "type": str("cron"),
+		"regions": tftypes.NewValue(tftypes.Set{ElementType: tftypes.String}, tftypes.UnknownValue)}
+	httpRegions := map[string]tftypes.Value{"name": str("Web"), "url": str("https://example.com"), "regions": regions("fra1")}
+	expectValidation(t, "cron with regions", withRegions, "not checked from probe locations")
+	expectValidation(t, "cron without regions", cron, "")
+	expectValidation(t, "cron with unknown regions", unknownRegions, "")
+	expectValidation(t, "http with regions", httpRegions, "")
+
+	ctx := context.Background()
+	r := &monitorResource{}
+	plan := monitorModel{
+		Name: types.StringValue("Nightly"), Type: types.StringValue("cron"), URL: types.StringNull(),
+		IntervalSeconds: types.Int64Unknown(), ConfigJSON: types.StringUnknown(), Tags: types.SetUnknown(types.StringType),
+		Regions: types.SetNull(types.StringType), Paused: types.BoolValue(false),
+	}
+	var diags diag.Diagnostics
+	body := r.spec(ctx, plan, types.StringNull(), &diags)
+	if diags.HasError() {
+		t.Fatal(diags)
+	}
+	if _, sent := body["regions"]; sent {
+		t.Fatalf("regions sent for a cron monitor: %v", body)
+	}
+	// Other types still send null regions (reset to the plan's defaults).
+	plan.Type = types.StringValue("ping")
+	if body := r.spec(ctx, plan, types.StringNull(), &diags); body == nil || body["regions"] != nil {
+		t.Fatalf("ping body = %v", body)
+	} else if _, sent := body["regions"]; !sent {
+		t.Fatalf("regions: null not sent for a ping monitor: %v", body)
+	}
+	// Type unknown at plan time and cron at apply: refused before any request.
+	plan.Type = types.StringValue("cron")
+	plan.Regions = stringSetValue(ctx, []string{"fra1"}, &diags)
+	if body := r.spec(ctx, plan, types.StringNull(), &diags); body != nil || !diags.HasError() {
+		t.Fatalf("cron with regions: body %v, diags %v", body, diags)
+	}
+
+	// Locations the API still reports for a cron monitor are not state.
+	diags = nil
+	model := monitorModel{ConfigJSON: types.StringNull(), Regions: types.SetNull(types.StringType)}
+	applyMonitor(ctx, client.Monitor{ID: "m1", Name: "Nightly", Type: "cron", Config: []byte(`{}`), ProbeRegions: []string{"fra1"}}, &model, &diags)
+	if diags.HasError() || !model.Regions.IsNull() {
+		t.Fatalf("cron regions = %s, diags %v", model.Regions, diags)
+	}
+	applyMonitor(ctx, client.Monitor{ID: "m2", Name: "Web", Type: "http", Config: []byte(`{}`), ProbeRegions: []string{"fra1"}}, &model, &diags)
+	if model.Regions.IsNull() {
+		t.Fatal("http regions dropped")
+	}
+}
