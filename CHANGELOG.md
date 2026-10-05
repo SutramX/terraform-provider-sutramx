@@ -1,0 +1,24 @@
+# Changelog
+
+All notable changes to this provider are documented here. Versions follow
+[Semantic Versioning](https://semver.org/); releases are the `vX.Y.Z` git tags.
+
+## 0.1.0 (Unreleased)
+
+First public release.
+
+FEATURES:
+
+* **New resource:** `sutramx_monitor`: HTTP, API, ping, port, UDP, cron (heartbeat), DNS and multi-step monitors, written through the idempotent `PUT /automation/monitors/{key}` endpoint. Import by id or key.
+* **New resource:** `sutramx_status_page`: status page settings and the ordered list of monitors shown on it. Import by id.
+* **New resource:** `sutramx_alert_channel`: integration connections (webhook, Slack, and other channel types) with `all`, `groups` or `monitors` alert routing. Needs an API key with automation access. Import by id.
+* **New data source:** `sutramx_regions`: probe locations.
+* **New data source:** `sutramx_plans`: plans, prices and limits.
+* **New data source:** `sutramx_maintenance_windows`: maintenance windows (read-only).
+* **New data source:** `sutramx_escalation_policies`: escalation policies (read-only).
+
+NOTES:
+
+* Stored monitor credentials (sensitive headers, tokens, URL passwords) and alert channel `config` are write-only in the API. The provider keeps the configured values in state and never reads them back.
+* When the provider runs with a read-only API key, the API masks a cron monitor's `heartbeat_url`. The provider keeps the value it already has in state.
+* Only `https://` API URLs are accepted. Requests are retried with backoff on 429, and on 502, 503 and 504 for idempotent methods.
