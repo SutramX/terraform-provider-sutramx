@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -229,4 +230,71 @@ func (tagValidator) ValidateString(_ context.Context, req validator.StringReques
 	case strings.ToLower(tag) != tag:
 		resp.Diagnostics.AddAttributeError(req.Path, "Invalid tag", fmt.Sprintf("Tag %q has upper-case letters; SutramX stores tags lower-case, so write it as %q.", tag, strings.ToLower(tag)))
 	}
+}
+
+// isAPISpace reports whether JavaScript's String.prototype.trim and the \s
+// regular expression class (which the API normalizes with) treat r as
+// whitespace.
+func isAPISpace(r rune) bool { return unicode.IsSpace(r) || r == '\uFEFF' }
+
+// trimAPISpace is value as the API's String.prototype.trim() leaves it.
+func trimAPISpace(value string) string { return strings.TrimFunc(value, isAPISpace) }
+
+// collapseAPISpace is value as the API's value.replace(/\s+/g, ' ').trim()
+// leaves it (alert channel names).
+func collapseAPISpace(value string) string {
+	return strings.Join(strings.FieldsFunc(value, isAPISpace), " ")
+}
+
+// normalizedStringValidator accepts a string only in the form the API stores
+// it: without surrounding whitespace (the API trims) and, with
+// collapseSpaces, without runs of inner whitespace (the API collapses them
+// to one space). Anything else would be read back changed and fail with
+// "Provider produced inconsistent result after apply".
+var _ validator.String = normalizedStringValidator{}
+
+type normalizedStringValidator struct {
+	// what names the attribute in messages, e.g. "Name".
+	what           string
+	collapseSpaces bool
+}
+
+func (v normalizedStringValidator) normalize(value string) string {
+	if v.collapseSpaces {
+		return collapseAPISpace(value)
+	}
+	return trimAPISpace(value)
+}
+
+func (v normalizedStringValidator) Description(_ context.Context) string {
+	if v.collapseSpaces {
+		return "must not have leading, trailing or repeated whitespace"
+	}
+	return "must not have leading or trailing whitespace"
+}
+
+func (v normalizedStringValidator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+func (v normalizedStringValidator) ValidateString(_ context.Context, req validator.StringRequest, resp *validator.StringResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	value := req.ConfigValue.ValueString()
+	normalized := v.normalize(value)
+	if normalized == value {
+		return
+	}
+	if normalized == "" {
+		resp.Diagnostics.AddAttributeError(req.Path, "Invalid "+strings.ToLower(v.what),
+			fmt.Sprintf("%s is only whitespace; SutramX trims it to an empty value. Write a value or leave the attribute out.", v.what))
+		return
+	}
+	how := "has leading or trailing whitespace; SutramX trims it"
+	if v.collapseSpaces {
+		how = "has leading, trailing or repeated whitespace; SutramX trims it and collapses inner whitespace to one space"
+	}
+	resp.Diagnostics.AddAttributeError(req.Path, "Invalid "+strings.ToLower(v.what),
+		fmt.Sprintf("%s %q %s, so write it as %q.", v.what, value, how, normalized))
 }

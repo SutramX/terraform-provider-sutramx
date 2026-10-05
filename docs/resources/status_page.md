@@ -33,12 +33,12 @@ resource "sutramx_status_page" "public" {
 
 ### Required
 
-- `title` (String)
+- `title` (String) Page title, 1-255 characters, without leading or trailing whitespace (SutramX trims it).
 
 ### Optional
 
 - `accent_color` (String) Hex colour like `#0d9488`.
-- `description` (String)
+- `description` (String) Up to 1000 characters, without leading or trailing whitespace (SutramX trims it and stores an empty description as none, so leave the attribute out instead).
 - `hide_powered_by` (Boolean) Remove SutramX branding (plans with white-label status pages).
 - `is_public` (Boolean) Whether the page is published.
 - `logo_url` (String) https:// image URL.
@@ -59,7 +59,7 @@ Required:
 
 Optional:
 
-- `section` (String) Optional heading the monitor is grouped under.
+- `section` (String) Optional heading the monitor is grouped under, 1-100 characters without leading or trailing whitespace.
 
 ## Import
 

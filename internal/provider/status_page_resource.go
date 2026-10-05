@@ -69,8 +69,9 @@ func (r *statusPageResource) Schema(_ context.Context, _ resource.SchemaRequest,
 				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
 			"title": schema.StringAttribute{
-				Required:   true,
-				Validators: []validator.String{stringvalidator.LengthBetween(1, 255)},
+				MarkdownDescription: "Page title, 1-255 characters, without leading or trailing whitespace (SutramX trims it).",
+				Required:            true,
+				Validators:          []validator.String{stringvalidator.LengthBetween(1, 255), normalizedStringValidator{what: "Title"}},
 			},
 			"slug": schema.StringAttribute{
 				MarkdownDescription: "URL slug (lower-case letters, digits, hyphens). Generated from the title when not set.",
@@ -79,7 +80,11 @@ func (r *statusPageResource) Schema(_ context.Context, _ resource.SchemaRequest,
 				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 				Validators:          []validator.String{stringvalidator.RegexMatches(regexp.MustCompile(`^[a-z0-9-]{3,64}$`), "3-64 lower-case letters, digits or hyphens")},
 			},
-			"description": schema.StringAttribute{Optional: true, Validators: []validator.String{stringvalidator.LengthAtMost(1000)}},
+			"description": schema.StringAttribute{
+				MarkdownDescription: "Up to 1000 characters, without leading or trailing whitespace (SutramX trims it and stores an empty description as none, so leave the attribute out instead).",
+				Optional:            true,
+				Validators:          []validator.String{stringvalidator.LengthBetween(1, 1000), normalizedStringValidator{what: "Description"}},
+			},
 			"is_public": schema.BoolAttribute{
 				MarkdownDescription: "Whether the page is published.",
 				Optional:            true,
@@ -107,7 +112,11 @@ func (r *statusPageResource) Schema(_ context.Context, _ resource.SchemaRequest,
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
 						"monitor_id": schema.StringAttribute{Required: true, MarkdownDescription: "`sutramx_monitor.<name>.id`"},
-						"section":    schema.StringAttribute{Optional: true, MarkdownDescription: "Optional heading the monitor is grouped under."},
+						"section": schema.StringAttribute{
+							Optional:            true,
+							MarkdownDescription: "Optional heading the monitor is grouped under, 1-100 characters without leading or trailing whitespace.",
+							Validators:          []validator.String{stringvalidator.LengthBetween(1, 100), normalizedStringValidator{what: "Section"}},
+						},
 					},
 				},
 			},

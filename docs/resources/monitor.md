@@ -102,7 +102,7 @@ output "nightly_job_heartbeat_url" {
 
 ### Required
 
-- `name` (String) Display name.
+- `name` (String) Display name, 1-255 characters, without leading or trailing whitespace (SutramX trims it).
 
 ### Optional
 
@@ -113,7 +113,7 @@ output "nightly_job_heartbeat_url" {
 - `regions` (Set of String) Probe location codes (see the `sutramx_regions` data source). Order does not matter. Omit to use the plan's default locations.
 - `tags` (Set of String) Tags, up to 20, each 1-32 characters. SutramX stores tags lower-case and trimmed, so they must be written that way: a tag with upper-case letters or surrounding spaces is a validation error at plan time. Left untouched when omitted.
 - `type` (String) Monitor type: `http` (default), `api`, `ping`, `port`, `udp`, `cron`, `dns` (DNS records) or `multistep` (multi-step API check). `dns` and `multistep` must be included in the workspace's plan, which also caps the steps of a multi-step check. Other values are passed to the API unchecked, so a type added to SutramX later works without a provider update. Changing it replaces the monitor.
-- `url` (String) Target URL for `http` and `api` monitors. Ping, port and UDP monitors use `host` in `config_json`, DNS monitors `hostname`, multi-step checks a `url` per step.
+- `url` (String) Target URL for `http` and `api` monitors. Ping, port and UDP monitors use `host` in `config_json`, DNS monitors `hostname`, multi-step checks a `url` per step. Written without leading or trailing whitespace (SutramX trims it).
 
 ### Read-Only
 

@@ -69,7 +69,7 @@ variable "payments_group_ids" {
 ### Required
 
 - `config` (Map of String, Sensitive) Channel fields, e.g. `{ webhook_url = var.slack_webhook_url }` for Slack or `{ integration_key = ... }` for PagerDuty. Stored encrypted by SutramX and never read back, so changes made outside Terraform are not detected.
-- `name` (String) Display name, unique among channels of the same type.
+- `name` (String) Display name, unique among channels of the same type. 1-80 characters; SutramX trims it and collapses runs of whitespace to one space, so write it that way.
 - `type` (String) Channel type as shown in the dashboard's integration list, e.g. `slack`, `discord`, `msteams`, `webhook`, `pagerduty`, `opsgenie`, `telegram`. Changing it replaces the channel.
 
 ### Optional

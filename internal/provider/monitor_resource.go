@@ -93,9 +93,9 @@ func (r *monitorResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				Validators:    []validator.String{stringvalidator.RegexMatches(monitorKeyPattern, "must be 1-128 letters, digits or . _ : / -, starting with a letter or digit")},
 			},
 			"name": schema.StringAttribute{
-				MarkdownDescription: "Display name.",
+				MarkdownDescription: "Display name, 1-255 characters, without leading or trailing whitespace (SutramX trims it).",
 				Required:            true,
-				Validators:          []validator.String{stringvalidator.LengthBetween(1, 255)},
+				Validators:          []validator.String{stringvalidator.LengthBetween(1, 255), normalizedStringValidator{what: "Name"}},
 			},
 			"type": schema.StringAttribute{
 				MarkdownDescription: "Monitor type: `http` (default), `api`, `ping`, `port`, `udp`, `cron`, `dns` (DNS records) or `multistep` (multi-step API check). " +
@@ -107,8 +107,10 @@ func (r *monitorResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
 			},
 			"url": schema.StringAttribute{
-				MarkdownDescription: "Target URL for `http` and `api` monitors. Ping, port and UDP monitors use `host` in `config_json`, DNS monitors `hostname`, multi-step checks a `url` per step.",
-				Optional:            true,
+				MarkdownDescription: "Target URL for `http` and `api` monitors. Ping, port and UDP monitors use `host` in `config_json`, DNS monitors `hostname`, multi-step checks a `url` per step. " +
+					"Written without leading or trailing whitespace (SutramX trims it).",
+				Optional:   true,
+				Validators: []validator.String{stringvalidator.LengthAtLeast(1), normalizedStringValidator{what: "URL"}},
 			},
 			"interval_seconds": schema.Int64Attribute{
 				MarkdownDescription: "Seconds between checks (15-900, not below the plan minimum). Defaults to the plan default.",

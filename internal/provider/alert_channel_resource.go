@@ -73,9 +73,9 @@ func (r *alertChannelResource) Schema(_ context.Context, _ resource.SchemaReques
 				PlanModifiers:       []planmodifier.String{stringplanmodifier.RequiresReplace()},
 			},
 			"name": schema.StringAttribute{
-				MarkdownDescription: "Display name, unique among channels of the same type.",
+				MarkdownDescription: "Display name, unique among channels of the same type. 1-80 characters; SutramX trims it and collapses runs of whitespace to one space, so write it that way.",
 				Required:            true,
-				Validators:          []validator.String{stringvalidator.LengthBetween(1, 80)},
+				Validators:          []validator.String{stringvalidator.LengthBetween(1, 80), normalizedStringValidator{what: "Name", collapseSpaces: true}},
 			},
 			"config": schema.MapAttribute{
 				MarkdownDescription: "Channel fields, e.g. `{ webhook_url = var.slack_webhook_url }` for Slack or `{ integration_key = ... }` for PagerDuty. " +

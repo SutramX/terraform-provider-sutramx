@@ -22,3 +22,4 @@ NOTES:
 * Stored monitor credentials (sensitive headers, tokens, URL passwords) and alert channel `config` are write-only in the API. The provider keeps the configured values in state and never reads them back.
 * When the provider runs with a read-only API key, the API masks a cron monitor's `heartbeat_url`. The provider keeps the value it already has in state.
 * Only `https://` API URLs are accepted. Requests are retried with backoff on 429, and on 502, 503 and 504 for idempotent methods.
+* Values SutramX normalizes must be written in the stored form, or plan fails: monitor `name` and `url`, status page `title`, `description` and monitor `section` without leading or trailing whitespace; alert channel `name` also without repeated inner whitespace. Previously such values failed apply with "Provider produced inconsistent result after apply". An empty status page `description` or `section` is also rejected (leave the attribute out).
