@@ -26,9 +26,10 @@ import (
 )
 
 var (
-	_ resource.Resource                = (*monitorResource)(nil)
-	_ resource.ResourceWithConfigure   = (*monitorResource)(nil)
-	_ resource.ResourceWithImportState = (*monitorResource)(nil)
+	_ resource.Resource                   = (*monitorResource)(nil)
+	_ resource.ResourceWithConfigure      = (*monitorResource)(nil)
+	_ resource.ResourceWithImportState    = (*monitorResource)(nil)
+	_ resource.ResourceWithValidateConfig = (*monitorResource)(nil)
 )
 
 var (
@@ -107,8 +108,8 @@ func (r *monitorResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
 			},
 			"url": schema.StringAttribute{
-				MarkdownDescription: "Target URL for `http` and `api` monitors. Ping, port and UDP monitors use `host` in `config_json`, DNS monitors `hostname`, multi-step checks a `url` per step. " +
-					"Written without leading or trailing whitespace (SutramX trims it).",
+				MarkdownDescription: "Target URL, required for `http` and `api` monitors. Ping, port and UDP monitors use `host` in `config_json`, DNS monitors `hostname`, multi-step checks a `url` per step. " +
+					"Written without leading or trailing whitespace (SutramX trims it). Removing it from the configuration of another monitor type removes it in SutramX.",
 				Optional:   true,
 				Validators: []validator.String{stringvalidator.LengthAtLeast(1), normalizedStringValidator{what: "URL"}},
 			},
@@ -164,6 +165,29 @@ func (r *monitorResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
 		},
+	}
+}
+
+// urlMonitorTypes need a url: the API refuses to create one without it, and
+// cannot clear it.
+var urlMonitorTypes = map[string]bool{"http": true, "api": true}
+
+// ValidateConfig rejects combinations the API refuses or cannot keep as
+// configured.
+func (r *monitorResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var monitorType, url types.String
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("type"), &monitorType)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("url"), &url)...)
+	if resp.Diagnostics.HasError() || monitorType.IsUnknown() {
+		return
+	}
+	kind := "http"
+	if !monitorType.IsNull() {
+		kind = monitorType.ValueString()
+	}
+	if urlMonitorTypes[kind] && url.IsNull() {
+		resp.Diagnostics.AddAttributeError(path.Root("url"), "Missing url",
+			fmt.Sprintf("url is required for %s monitors.", kind))
 	}
 }
 
@@ -276,6 +300,12 @@ func (r *monitorResource) upsert(ctx context.Context, key string, plan monitorMo
 		apiErrorDiag(diags, "Could not save the monitor", err)
 		return nil
 	}
+	if plan.URL.IsNull() && out.Monitor.URL != nil && *out.Monitor.URL != "" {
+		// The upsert leaves an omitted url alone (an existing monitor keeps
+		// it); removing url from the configuration takes an explicit empty
+		// url, which the API allows for every type but http and api.
+		return r.clearURL(ctx, out.Monitor.ID, diags)
+	}
 	return &out.Monitor
 }
 
@@ -353,6 +383,22 @@ func (r *monitorResource) Update(ctx context.Context, req resource.UpdateRequest
 	}
 	applyMonitor(ctx, *monitor, &plan, &resp.Diagnostics)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+// clearURL removes a monitor's url (PUT /monitors/:id with url "", which the
+// API stores as no url) and returns the monitor as GET /monitors/:id shows
+// it (the PUT answers with the bare row, without heartbeat_url).
+func (r *monitorResource) clearURL(ctx context.Context, id string, diags *diag.Diagnostics) *client.Monitor {
+	if err := r.client.Put(ctx, "/monitors/"+client.PathEscape(id), map[string]any{"url": ""}, nil); err != nil {
+		apiErrorDiag(diags, "Could not remove the monitor url", err)
+		return nil
+	}
+	var monitor client.Monitor
+	if err := r.client.Get(ctx, "/monitors/"+client.PathEscape(id), &monitor); err != nil {
+		apiErrorDiag(diags, "Could not read the monitor", err)
+		return nil
+	}
+	return &monitor
 }
 
 func (r *monitorResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {

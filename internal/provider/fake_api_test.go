@@ -149,6 +149,22 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		notFound(w)
+	case route == "PUT monitors" && len(parts) == 2:
+		// Only what the provider sends: url "" clears the url, except for
+		// http and api monitors. The reply is the bare row.
+		monitor := f.monitors[parts[1]]
+		if monitor == nil {
+			notFound(w)
+			return
+		}
+		if value, ok := body["url"]; ok && value == "" {
+			if monitor["type"] == "http" || monitor["type"] == "api" {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "URL is required for HTTP and API monitors"})
+				return
+			}
+			monitor["url"] = nil
+		}
+		writeJSON(w, 200, monitor)
 	case route == "DELETE monitors":
 		delete(f.monitors, parts[1])
 		w.WriteHeader(http.StatusNoContent)
