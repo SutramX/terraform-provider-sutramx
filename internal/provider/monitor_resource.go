@@ -256,6 +256,11 @@ func applyMonitor(ctx context.Context, monitor client.Monitor, model *monitorMod
 		// owner-managed keys, which a configuration only sets deliberately.
 		model.ConfigJSON = types.StringValue(canonicalJSON(withoutKeys(monitor.Config, serverManagedConfigKeys...)))
 	}
+	// Read-only callers (read_only API keys) get the heartbeat URL masked:
+	// keep the known value rather than storing the mask in state.
+	if monitor.HeartbeatURL != nil && *monitor.HeartbeatURL == maskedSecret && !model.HeartbeatURL.IsNull() && !model.HeartbeatURL.IsUnknown() {
+		return
+	}
 	model.HeartbeatURL = stringOrNull(monitor.HeartbeatURL)
 }
 
