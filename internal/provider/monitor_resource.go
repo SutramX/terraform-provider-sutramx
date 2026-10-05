@@ -109,8 +109,10 @@ func (r *monitorResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			},
 			"url": schema.StringAttribute{
 				MarkdownDescription: "Target URL, required for `http` and `api` monitors. Ping, port and UDP monitors use `host` in `config_json`, DNS monitors `hostname`, multi-step checks a `url` per step. " +
-					"Written without leading or trailing whitespace (SutramX trims it). Removing it from the configuration of another monitor type removes it in SutramX.",
-				Optional:   true,
+					"Written without leading or trailing whitespace (SutramX trims it). Removing it from the configuration of another monitor type removes it in SutramX. Sensitive (it can contain credentials), so plans do not show it.",
+				Optional: true,
+				// May carry credentials (user:password@, tokens in the query).
+				Sensitive:  true,
 				Validators: []validator.String{stringvalidator.LengthAtLeast(1), normalizedStringValidator{what: "URL"}},
 			},
 			"interval_seconds": schema.Int64Attribute{
@@ -126,9 +128,12 @@ func (r *monitorResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 					"Cron monitors need `cron_expression`; ping/port/UDP monitors need `host` (and `port`); " +
 					"DNS monitors need `hostname` (plus optional `record_type`, `dns_mode`, `expected_values`, ...); multi-step checks need `steps`. " +
 					"Stored credentials (sensitive headers, tokens, passwords) are read back masked as `[REDACTED]`. " +
-					"Multi-step `secrets` are write-only: the configured value is kept in state and changes made outside Terraform are not detected.",
-				Optional:      true,
-				Computed:      true,
+					"Multi-step `secrets` are write-only: the configured value is kept in state and changes made outside Terraform are not detected. " +
+					"Sensitive (it can hold headers, tokens and secrets), so plans do not show it.",
+				Optional: true,
+				Computed: true,
+				// Headers, tokens and multi-step secrets.
+				Sensitive:     true,
 				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
 			"tags": schema.SetAttribute{

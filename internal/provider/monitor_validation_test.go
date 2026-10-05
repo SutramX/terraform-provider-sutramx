@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 	"github.com/hashicorp/terraform-plugin-go/tftypes"
@@ -120,5 +121,17 @@ func TestMonitorUpsertClearsRemovedURL(t *testing.T) {
 	monitor = r.upsert(ctx, "db", plan, types.StringNull(), &diags)
 	if diags.HasError() || monitor.URL == nil || *monitor.URL != "https://new.example.com" {
 		t.Fatalf("url = %v, diags %v", monitor.URL, diags)
+	}
+}
+
+// url and config_json can carry credentials (URL userinfo, tokens, headers,
+// multi-step secrets): they must never be shown in plan output.
+func TestMonitorCredentialAttributesAreSensitive(t *testing.T) {
+	var resp resource.SchemaResponse
+	NewMonitorResource().Schema(context.Background(), resource.SchemaRequest{}, &resp)
+	for _, name := range []string{"url", "config_json", "heartbeat_url"} {
+		if !resp.Schema.Attributes[name].IsSensitive() {
+			t.Errorf("%s is not sensitive", name)
+		}
 	}
 }
