@@ -2,7 +2,9 @@
 # The Terraform Registry picks the release up from the GitHub release assets
 # (zips, SHA256SUMS, SHA256SUMS.sig, manifest).
 #
-# Repository secrets:
+# Secrets of the "release" environment (Settings -> Environments -> release,
+# with required reviewers and deployments limited to v* tags; not repository
+# secrets, so no other workflow or job can read them):
 #   GPG_PRIVATE_KEY  ASCII-armored private key whose public key is registered
 #                    in the Terraform Registry for the sutramx namespace
 #   PASSPHRASE       passphrase of that key
@@ -14,11 +16,15 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   goreleaser:
     runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      # Create the GitHub release and upload its assets.
+      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

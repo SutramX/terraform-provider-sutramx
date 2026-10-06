@@ -71,10 +71,18 @@ gpg --armor --export <KEY_ID>                 > public.asc    # for the registry
 Keep a backup of the private key and passphrase in your password manager.
 **Every** release must be signed with a key the registry knows.
 
-### 3. Add the GitHub Actions secrets
+### 3. Create the `release` environment and add the signing secrets
 
-In `SutramX/terraform-provider-sutramx`, open *Settings → Secrets and variables
-→ Actions → New repository secret* and add:
+The release job runs in the GitHub environment `release`, and the signing
+key is an **environment** secret, so only that job (after approval) can read
+it. In `SutramX/terraform-provider-sutramx`, open *Settings → Environments →
+New environment*, name it `release`, then:
+
+- **Required reviewers:** add the maintainers who approve releases.
+- **Deployment branches and tags:** *Selected branches and tags*, add the tag
+  rule `v*`.
+
+Under *Environment secrets* add:
 
 | Name | Value |
 |---|---|
@@ -84,9 +92,17 @@ In `SutramX/terraform-provider-sutramx`, open *Settings → Secrets and variable
 Or use the GitHub CLI:
 
 ```bash
-gh secret set GPG_PRIVATE_KEY --repo SutramX/terraform-provider-sutramx < private.asc
-gh secret set PASSPHRASE      --repo SutramX/terraform-provider-sutramx   # prompts
+gh secret set GPG_PRIVATE_KEY --repo SutramX/terraform-provider-sutramx --env release < private.asc
+gh secret set PASSPHRASE      --repo SutramX/terraform-provider-sutramx --env release   # prompts
 ```
+
+If `GPG_PRIVATE_KEY` and `PASSPHRASE` exist as repository secrets from an
+earlier setup, delete them after adding the environment secrets
+(`gh secret delete GPG_PRIVATE_KEY --repo SutramX/terraform-provider-sutramx`,
+same for `PASSPHRASE`).
+
+Also protect release tags: *Settings → Rules → Rulesets → New tag ruleset*,
+target `v*`, restrict creations, updates and deletions to maintainers.
 
 Then delete `private.asc` from disk (`rm -P private.asc` on macOS).
 
@@ -191,5 +207,5 @@ SUTRAMX_API_KEY=sk_... terraform apply   # data source only, creates nothing
   version. On the registry's provider settings page you can delete a version
   so `terraform init` stops choosing it.
 - **The key is compromised or expired:** create a new key, add it to the
-  registry next to the old one, update both GitHub secrets, and remove the old
+  registry next to the old one, update both `release` environment secrets, and remove the old
   key from the registry once the new release is listed.
