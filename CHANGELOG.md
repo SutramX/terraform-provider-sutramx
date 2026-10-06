@@ -3,7 +3,7 @@
 All notable changes to this provider are documented here. Versions follow
 [Semantic Versioning](https://semver.org/); releases are the `vX.Y.Z` git tags.
 
-## 0.1.0 (Unreleased)
+## 0.1.0 (October 6, 2026)
 
 First public release.
 
