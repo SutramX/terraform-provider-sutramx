@@ -27,15 +27,15 @@ The registry only lists **public** repositories. They must be named
 `terraform-provider-<name>`. The namespace comes from the owner, so the
 repository must belong to the `SutramX` GitHub organization.
 
-The current remote is `github.com/SutramX/terraform-provider-sutramx`.
-Move the repository with either option:
+If the repository lives anywhere else, move it into `SutramX` with either
+option:
 
 - **Transfer:** on GitHub, open the repository, then *Settings → General →
   Danger Zone → Transfer ownership* and choose `SutramX`.
 - **Create a new one:** create `SutramX/terraform-provider-sutramx` as a
   public repository and push `main` to it.
 
-Then:
+Then point your clone at it:
 
 ```bash
 git remote set-url origin https://github.com/SutramX/terraform-provider-sutramx.git
