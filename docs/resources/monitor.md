@@ -86,6 +86,27 @@ resource "sutramx_monitor" "checkout" {
   })
 }
 
+# MCP server: initialize the session and list the tools (never calls them).
+# Alerts when an expected tool is missing or the tool list drifts from the
+# accepted baseline. The Authorization header is read back masked.
+resource "sutramx_monitor" "docs_mcp" {
+  key  = "mcp/docs"
+  name = "Docs MCP"
+  type = "mcp"
+  url  = "https://mcp.example.com/mcp"
+  config_json = jsonencode({
+    headers        = { Authorization = "Bearer ${var.docs_mcp_token}" }
+    expected_tools = ["search_docs"]
+    drift_mode     = "alert_on_change"
+    drift_scope    = "schemas"
+  })
+}
+
+variable "docs_mcp_token" {
+  type      = string
+  sensitive = true
+}
+
 variable "checkout_api_key" {
   type      = string
   sensitive = true
@@ -106,14 +127,14 @@ output "nightly_job_heartbeat_url" {
 
 ### Optional
 
-- `config_json` (String, Sensitive) Type-specific settings as a JSON object, e.g. `jsonencode({ timeout = 10000, expected_status_codes = [200] })`. Managed as a whole when set; left untouched when omitted (it then shows the stored settings, in `jsonencode` form). Cron monitors need `cron_expression`; ping/port/UDP monitors need `host` (and `port`); DNS monitors need `hostname` (plus optional `record_type`, `dns_mode`, `expected_values`, ...); multi-step checks need `steps`. Stored credentials (sensitive headers, tokens, passwords) are read back masked as `[REDACTED]`. Multi-step `secrets` are write-only: the configured value is kept in state and changes made outside Terraform are not detected. Sensitive (it can hold headers, tokens and secrets), so plans do not show it.
+- `config_json` (String, Sensitive) Type-specific settings as a JSON object, e.g. `jsonencode({ timeout = 10000, expected_status_codes = [200] })`. Managed as a whole when set; left untouched when omitted (it then shows the stored settings, in `jsonencode` form). Cron monitors need `cron_expression`; ping/port/UDP monitors need `host` (and `port`); DNS monitors need `hostname` (plus optional `record_type`, `dns_mode`, `expected_values`, ...); multi-step checks need `steps`; MCP monitors take optional `headers`, `protocol_version`, `strict_protocol_version`, `expected_tools`, `drift_mode`, `drift_scope`, `drift_severity`, `timeout` and `verify_tls`. Stored credentials (sensitive headers, tokens, passwords) are read back masked as `[REDACTED]`. Multi-step `secrets` are write-only: the configured value is kept in state and changes made outside Terraform are not detected. Sensitive (it can hold headers, tokens and secrets), so plans do not show it.
 - `interval_seconds` (Number) Seconds between checks (15-900, not below the plan minimum). Defaults to the plan default.
 - `key` (String) Stable key, unique in the workspace (the same `key` sutramx.yml uses). Creates are idempotent by key. Generated (`tf-...`) when not set. Letters, digits and `. _ : / -`, up to 128 characters.
 - `paused` (Boolean) Pause checks. Defaults to `false`.
 - `regions` (Set of String) Probe location codes (see the `sutramx_regions` data source). Order does not matter. Omit to use the plan's default locations. Not allowed for `cron` (heartbeat) monitors, which are not checked from locations.
 - `tags` (Set of String) Tags, up to 20, each 1-32 characters. SutramX stores tags lower-case and trimmed, so they must be written that way: a tag with upper-case letters or surrounding spaces is a validation error at plan time. Left untouched when omitted.
-- `type` (String) Monitor type: `http` (default), `api`, `ping`, `port`, `udp`, `cron`, `dns` (DNS records) or `multistep` (multi-step API check). `dns` and `multistep` must be included in the workspace's plan, which also caps the steps of a multi-step check. Other values are passed to the API unchecked, so a type added to SutramX later works without a provider update. Changing it replaces the monitor.
-- `url` (String, Sensitive) Target URL, required for `http` and `api` monitors. Ping, port and UDP monitors use `host` in `config_json`, DNS monitors `hostname`, multi-step checks a `url` per step. Written without leading or trailing whitespace (SutramX trims it). Removing it from the configuration of another monitor type removes it in SutramX. Sensitive (it can contain credentials), so plans do not show it.
+- `type` (String) Monitor type: `http` (default), `api`, `ping`, `port`, `udp`, `cron`, `dns` (DNS records), `multistep` (multi-step API check) or `mcp` (remote MCP server). `dns` and `multistep` must be included in the workspace's plan, which also caps the steps of a multi-step check. Other values are passed to the API unchecked, so a type added to SutramX later works without a provider update. Changing it replaces the monitor.
+- `url` (String, Sensitive) Target URL, required for `http`, `api` and `mcp` monitors (for `mcp`, the server's Streamable HTTP endpoint, which must be `https://`). Ping, port and UDP monitors use `host` in `config_json`, DNS monitors `hostname`, multi-step checks a `url` per step. Written without leading or trailing whitespace (SutramX trims it). Removing it from the configuration of another monitor type removes it in SutramX. Sensitive (it can contain credentials), so plans do not show it.
 
 ### Read-Only
 

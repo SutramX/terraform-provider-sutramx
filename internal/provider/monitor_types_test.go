@@ -108,6 +108,68 @@ resource "sutramx_monitor" "checkout" {
 	})
 }
 
+// MCP monitors take the server endpoint as url and their settings through
+// config_json. The API reads credential headers back masked: that must not
+// cause an "inconsistent result" after apply or a perpetual diff.
+func TestFakeAPIMCPMonitor(t *testing.T) {
+	api := newFakeAPI()
+	server := httptest.NewServer(api)
+	defer server.Close()
+	t.Setenv("SUTRAMX_API_URL", server.URL)
+	t.Setenv("SUTRAMX_API_KEY", "sk_test")
+
+	config := func(token string, tools string) string {
+		return fmt.Sprintf(`
+resource "sutramx_monitor" "docs" {
+  key  = "mcp/docs"
+  name = "Docs MCP"
+  type = "mcp"
+  url  = "https://mcp.example.com/mcp"
+  config_json = jsonencode({
+    headers        = { Authorization = "Bearer %s" }
+    expected_tools = [%s]
+    drift_mode     = "alert_on_change"
+    drift_scope    = "names"
+    timeout        = 15000
+  })
+}
+`, token, tools)
+	}
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: config("abc", `"search_docs"`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("sutramx_monitor.docs", "type", "mcp"),
+					resource.TestCheckResourceAttr("sutramx_monitor.docs", "url", "https://mcp.example.com/mcp"),
+					resource.TestMatchResourceAttr("sutramx_monitor.docs", "config_json", regexp.MustCompile(`"Authorization":"Bearer abc"`)),
+					func(_ *terraform.State) error {
+						api.mu.Lock()
+						defer api.mu.Unlock()
+						for _, monitor := range api.monitors {
+							if monitor["type"] != "mcp" {
+								continue
+							}
+							headers := monitor["config"].(map[string]any)["headers"].(map[string]any)
+							if headers["Authorization"] != maskedSecret {
+								return fmt.Errorf("fake API did not mask the header: %v", headers)
+							}
+						}
+						return nil
+					},
+				),
+			},
+			{Config: config("abc", `"search_docs"`), PlanOnly: true},
+			// A new token or tool list is a change.
+			{Config: config("xyz", `"search_docs"`), PlanOnly: true, ExpectNonEmptyPlan: true},
+			{Config: config("abc", `"search_docs", "get_page"`), PlanOnly: true, ExpectNonEmptyPlan: true},
+			{Config: config("abc", `"search_docs", "get_page"`)},
+			{Config: config("abc", `"search_docs", "get_page"`), PlanOnly: true},
+		},
+	})
+}
+
 func TestApplyMonitorKeepsWriteOnlyAndDNSSpelling(t *testing.T) {
 	ctx := context.Background()
 	apply := func(monitorType, configured, remote string) string {

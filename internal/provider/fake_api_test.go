@@ -151,15 +151,15 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		notFound(w)
 	case route == "PUT monitors" && len(parts) == 2:
 		// Only what the provider sends: url "" clears the url, except for
-		// http and api monitors. The reply is the bare row.
+		// http, api and mcp monitors. The reply is the bare row.
 		monitor := f.monitors[parts[1]]
 		if monitor == nil {
 			notFound(w)
 			return
 		}
 		if value, ok := body["url"]; ok && value == "" {
-			if monitor["type"] == "http" || monitor["type"] == "api" {
-				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "URL is required for HTTP and API monitors"})
+			if monitor["type"] == "http" || monitor["type"] == "api" || monitor["type"] == "mcp" {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "URL is required for HTTP, API and MCP monitors"})
 				return
 			}
 			monitor["url"] = nil
@@ -241,10 +241,11 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// fakeTypedConfig stores a dns / multistep config the way the server's
+// fakeTypedConfig stores a dns / multistep / mcp config the way the server's
 // prepareTypedMonitorConfig does: DNS host name and record type normalized
 // (record type A by default), multi-step secrets removed (sealed elsewhere)
-// and their names listed in secret_names.
+// and their names listed in secret_names. MCP credential headers are read
+// back masked, like http monitors' headers.
 func fakeTypedConfig(monitorType string, incoming map[string]any) map[string]any {
 	config := map[string]any{}
 	for k, v := range incoming {
@@ -271,6 +272,17 @@ func fakeTypedConfig(monitorType string, incoming map[string]any) map[string]any
 		sort.Strings(names)
 		delete(config, "secrets")
 		config["secret_names"] = names
+	case "mcp":
+		if headers, ok := config["headers"].(map[string]any); ok {
+			masked := map[string]any{}
+			for name, value := range headers {
+				if strings.EqualFold(name, "authorization") || strings.EqualFold(name, "x-api-key") {
+					value = maskedSecret
+				}
+				masked[name] = value
+			}
+			config["headers"] = masked
+		}
 	}
 	return config
 }

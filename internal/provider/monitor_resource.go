@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
@@ -99,7 +100,7 @@ func (r *monitorResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				Validators:          []validator.String{stringvalidator.LengthBetween(1, 255), normalizedStringValidator{what: "Name"}},
 			},
 			"type": schema.StringAttribute{
-				MarkdownDescription: "Monitor type: `http` (default), `api`, `ping`, `port`, `udp`, `cron`, `dns` (DNS records) or `multistep` (multi-step API check). " +
+				MarkdownDescription: "Monitor type: `http` (default), `api`, `ping`, `port`, `udp`, `cron`, `dns` (DNS records), `multistep` (multi-step API check) or `mcp` (remote MCP server). " +
 					"`dns` and `multistep` must be included in the workspace's plan, which also caps the steps of a multi-step check. " +
 					"Other values are passed to the API unchecked, so a type added to SutramX later works without a provider update. Changing it replaces the monitor.",
 				Optional:      true,
@@ -108,7 +109,7 @@ func (r *monitorResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
 			},
 			"url": schema.StringAttribute{
-				MarkdownDescription: "Target URL, required for `http` and `api` monitors. Ping, port and UDP monitors use `host` in `config_json`, DNS monitors `hostname`, multi-step checks a `url` per step. " +
+				MarkdownDescription: "Target URL, required for `http`, `api` and `mcp` monitors (for `mcp`, the server's Streamable HTTP endpoint, which must be `https://`). Ping, port and UDP monitors use `host` in `config_json`, DNS monitors `hostname`, multi-step checks a `url` per step. " +
 					"Written without leading or trailing whitespace (SutramX trims it). Removing it from the configuration of another monitor type removes it in SutramX. Sensitive (it can contain credentials), so plans do not show it.",
 				Optional: true,
 				// May carry credentials (user:password@, tokens in the query).
@@ -126,7 +127,8 @@ func (r *monitorResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				MarkdownDescription: "Type-specific settings as a JSON object, e.g. `jsonencode({ timeout = 10000, expected_status_codes = [200] })`. " +
 					"Managed as a whole when set; left untouched when omitted (it then shows the stored settings, in `jsonencode` form). " +
 					"Cron monitors need `cron_expression`; ping/port/UDP monitors need `host` (and `port`); " +
-					"DNS monitors need `hostname` (plus optional `record_type`, `dns_mode`, `expected_values`, ...); multi-step checks need `steps`. " +
+					"DNS monitors need `hostname` (plus optional `record_type`, `dns_mode`, `expected_values`, ...); multi-step checks need `steps`; " +
+					"MCP monitors take optional `headers`, `protocol_version`, `strict_protocol_version`, `expected_tools`, `drift_mode`, `drift_scope`, `drift_severity`, `timeout` and `verify_tls`. " +
 					"Stored credentials (sensitive headers, tokens, passwords) are read back masked as `[REDACTED]`. " +
 					"Multi-step `secrets` are write-only: the configured value is kept in state and changes made outside Terraform are not detected. " +
 					"Sensitive (it can hold headers, tokens and secrets), so plans do not show it.",
@@ -176,7 +178,11 @@ func (r *monitorResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 
 // urlMonitorTypes need a url: the API refuses to create one without it, and
 // cannot clear it.
-var urlMonitorTypes = map[string]bool{"http": true, "api": true}
+var urlMonitorTypes = map[string]bool{"http": true, "api": true, mcpMonitorType: true}
+
+// mcpMonitorType checks a remote MCP server over the Streamable HTTP
+// transport; the API only accepts an https:// url for it.
+const mcpMonitorType = "mcp"
 
 // cronMonitorType is the heartbeat monitor: it has no probe locations and the
 // API refuses regions for it.
@@ -200,6 +206,11 @@ func (r *monitorResource) ValidateConfig(ctx context.Context, req resource.Valid
 	if urlMonitorTypes[kind] && url.IsNull() {
 		resp.Diagnostics.AddAttributeError(path.Root("url"), "Missing url",
 			fmt.Sprintf("url is required for %s monitors.", kind))
+	}
+	// An unknown url is checked by the API on apply.
+	if kind == mcpMonitorType && !url.IsNull() && !url.IsUnknown() && !strings.HasPrefix(strings.ToLower(url.ValueString()), "https://") {
+		resp.Diagnostics.AddAttributeError(path.Root("url"), "Invalid url",
+			"MCP monitors need an https:// url (the server's Streamable HTTP endpoint).")
 	}
 	// An unknown set may still turn out null, so only a known one is refused.
 	if kind == cronMonitorType && !regions.IsNull() && !regions.IsUnknown() {
@@ -329,7 +340,7 @@ func (r *monitorResource) upsert(ctx context.Context, key string, plan monitorMo
 	if plan.URL.IsNull() && out.Monitor.URL != nil && *out.Monitor.URL != "" {
 		// The upsert leaves an omitted url alone (an existing monitor keeps
 		// it); removing url from the configuration takes an explicit empty
-		// url, which the API allows for every type but http and api.
+		// url, which the API allows for every type but http, api and mcp.
 		return r.clearURL(ctx, out.Monitor.ID, diags)
 	}
 	return &out.Monitor

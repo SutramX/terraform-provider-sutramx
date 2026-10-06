@@ -71,6 +71,27 @@ resource "sutramx_monitor" "checkout" {
   })
 }
 
+# MCP server: initialize the session and list the tools (never calls them).
+# Alerts when an expected tool is missing or the tool list drifts from the
+# accepted baseline. The Authorization header is read back masked.
+resource "sutramx_monitor" "docs_mcp" {
+  key  = "mcp/docs"
+  name = "Docs MCP"
+  type = "mcp"
+  url  = "https://mcp.example.com/mcp"
+  config_json = jsonencode({
+    headers        = { Authorization = "Bearer ${var.docs_mcp_token}" }
+    expected_tools = ["search_docs"]
+    drift_mode     = "alert_on_change"
+    drift_scope    = "schemas"
+  })
+}
+
+variable "docs_mcp_token" {
+  type      = string
+  sensitive = true
+}
+
 variable "checkout_api_key" {
   type      = string
   sensitive = true

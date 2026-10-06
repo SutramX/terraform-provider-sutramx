@@ -9,7 +9,7 @@ First public release.
 
 FEATURES:
 
-* **New resource:** `sutramx_monitor`: HTTP, API, ping, port, UDP, cron (heartbeat), DNS and multi-step monitors, written through the idempotent `PUT /automation/monitors/{key}` endpoint. Import by id or key.
+* **New resource:** `sutramx_monitor`: HTTP, API, ping, port, UDP, cron (heartbeat), DNS, multi-step and MCP server monitors, written through the idempotent `PUT /automation/monitors/{key}` endpoint. Import by id or key.
 * **New resource:** `sutramx_status_page`: status page settings and the ordered list of monitors shown on it. Import by id.
 * **New resource:** `sutramx_alert_channel`: integration connections (webhook, Slack, and other channel types) with `all`, `groups` or `monitors` alert routing. Needs an API key with automation access. Import by id.
 * **New data source:** `sutramx_regions`: probe locations.

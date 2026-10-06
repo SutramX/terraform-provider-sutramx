@@ -68,12 +68,16 @@ func expectValidation(t *testing.T, name string, attrs map[string]tftypes.Value,
 	}
 }
 
-// http and api monitors need a url (the API cannot store one without it);
-// other types may leave it out.
+// http, api and mcp monitors need a url (the API cannot store one without
+// it), mcp an https:// one; other types may leave it out.
 func TestMonitorURLRequiredForHTTPAndAPI(t *testing.T) {
 	expectValidation(t, "default type without url", map[string]tftypes.Value{"name": str("Web")}, "url is required for http monitors")
 	expectValidation(t, "api without url", map[string]tftypes.Value{"name": str("API"), "type": str("api")}, "url is required for api monitors")
 	expectValidation(t, "http with url", map[string]tftypes.Value{"name": str("Web"), "url": str("https://example.com")}, "")
+	expectValidation(t, "mcp without url", map[string]tftypes.Value{"name": str("MCP"), "type": str("mcp")}, "url is required for mcp monitors")
+	expectValidation(t, "mcp with http url", map[string]tftypes.Value{"name": str("MCP"), "type": str("mcp"), "url": str("http://mcp.example.com/mcp")}, "need an https:// url")
+	expectValidation(t, "mcp with https url", map[string]tftypes.Value{"name": str("MCP"), "type": str("mcp"), "url": str("HTTPS://mcp.example.com/mcp")}, "")
+	expectValidation(t, "http with http url", map[string]tftypes.Value{"name": str("Web"), "url": str("http://example.com")}, "")
 	expectValidation(t, "port without url", map[string]tftypes.Value{"name": str("DB"), "type": str("port")}, "")
 	expectValidation(t, "unknown type", map[string]tftypes.Value{"name": str("X"), "type": tftypes.NewValue(tftypes.String, tftypes.UnknownValue)}, "")
 	expectValidation(t, "empty url", map[string]tftypes.Value{"name": str("Web"), "url": str("")}, "at least 1")
