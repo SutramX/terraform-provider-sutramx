@@ -45,3 +45,12 @@ variable "sutramx_api_key" {
 
 - `api_key` (String, Sensitive) SutramX API key (`sk_...`), from Settings → API keys. Can also be set with `SUTRAMX_API_KEY`. `sutramx_alert_channel` needs a key created with **Automation access**. A **Read-only** key can run `terraform plan` (data sources and refresh) but `apply` fails with `403 READ_ONLY_ACCESS`; use it for plan-only CI jobs and drift detection.
 - `api_url` (String) API base URL. Defaults to `https://api.sutramx.com`, or `SUTRAMX_API_URL`. Must use `https://` (plain `http://` only for localhost).
+
+## Secrets in state
+
+`Sensitive` attributes (`api_key`, a monitor's `config_json` and `url`, `heartbeat_url`, an alert channel's `config` and `signing_secret`) are hidden in plan and apply output, but Terraform still stores them **in plain text in the state file**: the provider keeps the configured value so a masked API response doesn't cause a permanent diff. Treat state as a secret:
+
+- Use a remote backend that encrypts at rest and limits who can read it (for example S3 with SSE-KMS and a bucket policy, Terraform Cloud/HCP Terraform, or GCS with CMEK). Don't commit `terraform.tfstate` or `*.tfstate.backup`.
+- OpenTofu users can also turn on [state encryption](https://opentofu.org/docs/language/state/encryption/).
+- Read-only CI jobs (`terraform plan`) still read the state, so give them the same protection.
+- Rotate a channel signing secret or monitor credential if a state file leaks.
