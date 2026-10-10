@@ -3,6 +3,15 @@
 All notable changes to this provider are documented here. Versions follow
 [Semantic Versioning](https://semver.org/); releases are the `vX.Y.Z` git tags.
 
+## 0.1.2 (October 10, 2026)
+
+No provider code changes since 0.1.0. There is no 0.1.1 release: that tag was never published.
+
+NOTES:
+
+* Docs: a new "Secrets in state" section explains that `Sensitive` attributes are stored in plain text in the state file, and how to protect state.
+* Release pipeline: GoReleaser is pinned to v2.18.3, and the job that holds the signing key no longer uses a Go cache.
+
 ## 0.1.0 (October 6, 2026)
 
 First public release.
