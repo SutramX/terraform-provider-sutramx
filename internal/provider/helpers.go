@@ -132,7 +132,21 @@ func stringSetValue(ctx context.Context, values []string, diags *diag.Diagnostic
 }
 
 func apiErrorDiag(diags *diag.Diagnostics, summary string, err error) {
+	if apiErr, ok := client.AsPlanLimit(err); ok {
+		diags.AddError(summary+": plan limit reached", apiErr.Error()+"\n\n"+
+			"This is a limit of the workspace's SutramX plan, so running apply again will not help. "+
+			"Change the plan in SutramX, or remove or scale down resources in the configuration, then apply again.")
+		return
+	}
 	diags.AddError(summary, err.Error())
+}
+
+// addAPIWarnings shows the warnings the API attached to a write (e.g. an
+// ignored field) as Terraform warnings.
+func addAPIWarnings(diags *diag.Diagnostics, warnings []string) {
+	for _, warning := range warnings {
+		diags.AddWarning("SutramX API warning", warning)
+	}
 }
 
 // keepPriorKeys returns the remote config JSON object with each of keys

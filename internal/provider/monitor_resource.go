@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strings"
 
@@ -333,10 +334,12 @@ func (r *monitorResource) upsert(ctx context.Context, key string, plan monitorMo
 		return nil
 	}
 	var out client.MonitorUpsertResponse
-	if err := r.client.Put(ctx, "/automation/monitors/"+client.PathEscape(key), body, &out); err != nil {
+	warnings, err := r.client.Send(ctx, http.MethodPut, "/automation/monitors/"+client.PathEscape(key), body, &out)
+	if err != nil {
 		apiErrorDiag(diags, "Could not save the monitor", err)
 		return nil
 	}
+	addAPIWarnings(diags, warnings)
 	if plan.URL.IsNull() && out.Monitor.URL != nil && *out.Monitor.URL != "" {
 		// The upsert leaves an omitted url alone (an existing monitor keeps
 		// it); removing url from the configuration takes an explicit empty

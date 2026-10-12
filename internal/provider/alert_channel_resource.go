@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net/http"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
@@ -251,10 +252,12 @@ func (r *alertChannelResource) Create(ctx context.Context, req resource.CreateRe
 		return
 	}
 	var saved client.ConnectionSaveResponse
-	if err := r.client.Post(ctx, "/integrations/"+client.PathEscape(plan.Type.ValueString())+"/connections", body, &saved); err != nil {
+	warnings, err := r.client.Send(ctx, http.MethodPost, "/integrations/"+client.PathEscape(plan.Type.ValueString())+"/connections", body, &saved)
+	if err != nil {
 		apiErrorDiag(&resp.Diagnostics, "Could not create the alert channel", err)
 		return
 	}
+	addAPIWarnings(&resp.Diagnostics, warnings)
 	plan.SigningSecret = stringOrNull(saved.SigningSecret)
 	connection := r.find(ctx, saved.ConnectionID, &resp.Diagnostics)
 	if connection == nil {
@@ -296,7 +299,9 @@ func (r *alertChannelResource) Update(ctx context.Context, req resource.UpdateRe
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	if err := r.client.Put(ctx, "/integrations/connections/"+client.PathEscape(state.ID.ValueString()), body, nil); err != nil {
+	warnings, err := r.client.Send(ctx, http.MethodPut, "/integrations/connections/"+client.PathEscape(state.ID.ValueString()), body, nil)
+	addAPIWarnings(&resp.Diagnostics, warnings)
+	if err != nil {
 		apiErrorDiag(&resp.Diagnostics, "Could not update the alert channel", err)
 		return
 	}

@@ -29,6 +29,12 @@ type fakeAPI struct {
 	// Read-only lists (GET /maintenance, GET /settings/escalation-policies).
 	maintenance []any
 	escalation  []any
+	// monitorLimit > 0 refuses creating more monitors, like the plan limit.
+	monitorLimit int
+	// writeWarnings are attached to write answers (newer servers).
+	writeWarnings []string
+	// idempotencyKeys holds the Idempotency-Key of every POST.
+	idempotencyKeys []string
 }
 
 func newFakeAPI() *fakeAPI {
@@ -66,6 +72,9 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "Invalid API key"})
 		return
 	}
+	if r.Method == http.MethodPost {
+		f.idempotencyKeys = append(f.idempotencyKeys, r.Header.Get("Idempotency-Key"))
+	}
 	var body map[string]any
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	parts := strings.Split(strings.Trim(r.URL.EscapedPath(), "/"), "/")
@@ -92,6 +101,10 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		key := parts[2]
 		monitor := f.monitorByKey(key)
 		action := "updated"
+		if monitor == nil && f.monitorLimit > 0 && len(f.monitors) >= f.monitorLimit {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": fmt.Sprintf("Your plan allows %d monitors", f.monitorLimit), "code": "ENTITLEMENT_LIMIT_REACHED", "category": "PLAN_LIMIT", "details": map[string]any{"resource": "monitors"}})
+			return
+		}
 		if monitor == nil {
 			action = "created"
 			monitor = map[string]any{"id": f.id(), "external_id": key, "interval_seconds": 120, "config": map[string]any{}, "tags": []string{}, "probe_regions": nil, "url": nil}
@@ -120,7 +133,7 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if paused, ok := body["paused"].(bool); ok {
 			monitor["is_active"] = !paused
 		}
-		writeJSON(w, 200, map[string]any{"action": action, "monitor": monitor})
+		writeJSON(w, 200, map[string]any{"action": action, "monitor": monitor, "warnings": f.writeWarnings})
 	case route == "GET automation/monitors" && len(parts) == 3:
 		if monitor := f.monitorByKey(parts[2]); monitor != nil {
 			writeJSON(w, 200, monitor)
@@ -178,7 +191,11 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			page["is_public"] = v
 		}
 		f.pages[page["id"].(string)] = page
-		writeJSON(w, 201, page)
+		answer := map[string]any{"warnings": f.writeWarnings}
+		for k, v := range page {
+			answer[k] = v
+		}
+		writeJSON(w, 201, answer)
 	case route == "PATCH status/pages":
 		page := f.pages[parts[2]]
 		for k, v := range body {

@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"net/http"
 	"regexp"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
@@ -174,7 +175,9 @@ func (r *statusPageResource) setMonitors(ctx context.Context, id string, configu
 	for _, entry := range entries {
 		items = append(items, map[string]any{"monitor_id": entry.MonitorID.ValueString(), "section": optionalString(entry.Section)})
 	}
-	if err := r.client.Put(ctx, "/status/pages/"+client.PathEscape(id)+"/monitors", map[string]any{"monitors": items}, nil); err != nil {
+	warnings, err := r.client.Send(ctx, http.MethodPut, "/status/pages/"+client.PathEscape(id)+"/monitors", map[string]any{"monitors": items}, nil)
+	addAPIWarnings(diags, warnings)
+	if err != nil {
 		apiErrorDiag(diags, "Could not set the status page monitors", err)
 	}
 }
@@ -234,11 +237,15 @@ func (r *statusPageResource) Create(ctx context.Context, req resource.CreateRequ
 		createBody["is_public"] = plan.IsPublic.ValueBool()
 	}
 	var created client.StatusPage
-	if err := r.client.Post(ctx, "/status/pages", createBody, &created); err != nil {
+	warnings, err := r.client.Send(ctx, http.MethodPost, "/status/pages", createBody, &created)
+	if err != nil {
 		apiErrorDiag(&resp.Diagnostics, "Could not create the status page", err)
 		return
 	}
-	if err := r.client.Patch(ctx, "/status/pages/"+client.PathEscape(created.ID), r.patchBody(plan, true), nil); err != nil {
+	addAPIWarnings(&resp.Diagnostics, warnings)
+	warnings, err = r.client.Send(ctx, http.MethodPatch, "/status/pages/"+client.PathEscape(created.ID), r.patchBody(plan, true), nil)
+	addAPIWarnings(&resp.Diagnostics, warnings)
+	if err != nil {
 		// Do not leave a half-configured page behind (e.g. the slug is taken).
 		_ = r.client.Delete(ctx, "/status/pages/"+client.PathEscape(created.ID))
 		apiErrorDiag(&resp.Diagnostics, "Could not configure the status page", err)
@@ -277,7 +284,9 @@ func (r *statusPageResource) Update(ctx context.Context, req resource.UpdateRequ
 	}
 	id := state.ID.ValueString()
 	includeSlug := !plan.Slug.IsUnknown() && plan.Slug.ValueString() != state.Slug.ValueString()
-	if err := r.client.Patch(ctx, "/status/pages/"+client.PathEscape(id), r.patchBody(plan, includeSlug), nil); err != nil {
+	warnings, err := r.client.Send(ctx, http.MethodPatch, "/status/pages/"+client.PathEscape(id), r.patchBody(plan, includeSlug), nil)
+	addAPIWarnings(&resp.Diagnostics, warnings)
+	if err != nil {
 		apiErrorDiag(&resp.Diagnostics, "Could not update the status page", err)
 		return
 	}
