@@ -77,7 +77,7 @@ func (r *monitorResource) Metadata(_ context.Context, req resource.MetadataReque
 
 func (r *monitorResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "An uptime monitor. Checks run from SutramX probe regions and incidents open only when several regions agree. " +
+		MarkdownDescription: "An uptime monitor. Checks run from several SutramX monitoring locations and incidents open only when several locations agree. " +
 			"Plan limits (monitor count, minimum interval, locations) are enforced by the API.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
@@ -154,7 +154,7 @@ func (r *monitorResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 				},
 			},
 			"regions": schema.SetAttribute{
-				MarkdownDescription: "Probe location codes (see the `sutramx_regions` data source). Order does not matter. Omit to use the plan's default locations. " +
+				MarkdownDescription: "Monitoring location codes (see the `sutramx_regions` data source). Order does not matter. Omit to use the plan's default locations. " +
 					"Not allowed for `cron` (heartbeat) monitors, which are not checked from locations.",
 				ElementType: types.StringType,
 				Optional:    true,
@@ -218,7 +218,7 @@ func (r *monitorResource) ValidateConfig(ctx context.Context, req resource.Valid
 	// An unknown set may still turn out null, so only a known one is refused.
 	if kind == cronMonitorType && !regions.IsNull() && !regions.IsUnknown() {
 		resp.Diagnostics.AddAttributeError(path.Root("regions"), "Unexpected regions",
-			"Cron (heartbeat) monitors are not checked from probe locations: your job calls the heartbeat URL. Remove regions.")
+			"Cron (heartbeat) monitors are not checked from monitoring locations: your job calls the heartbeat URL. Remove regions.")
 	}
 }
 
@@ -261,7 +261,7 @@ func (r *monitorResource) spec(ctx context.Context, plan monitorModel, configure
 		// monitor. Set regions are caught by ValidateConfig unless the type
 		// was unknown then.
 		if !plan.Regions.IsNull() {
-			diags.AddAttributeError(path.Root("regions"), "Unexpected regions", "Cron (heartbeat) monitors are not checked from probe locations. Remove regions.")
+			diags.AddAttributeError(path.Root("regions"), "Unexpected regions", "Cron (heartbeat) monitors are not checked from monitoring locations. Remove regions.")
 			return nil
 		}
 	case plan.Regions.IsNull():

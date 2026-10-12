@@ -3,12 +3,12 @@
 page_title: "sutramx_regions Data Source - sutramx"
 subcategory: ""
 description: |-
-  SutramX probe locations. Use code in sutramx_monitor.regions. Which codes a monitor may use depends on the plan and billing market. Does not need an API key.
+  SutramX monitoring locations. Use code in sutramx_monitor.regions. Which codes a monitor may use depends on the plan and billing market. Does not need an API key.
 ---
 
 # sutramx_regions (Data Source)
 
-SutramX probe locations. Use `code` in `sutramx_monitor.regions`. Which codes a monitor may use depends on the plan and billing market. Does not need an API key.
+SutramX monitoring locations. Use `code` in `sutramx_monitor.regions`. Which codes a monitor may use depends on the plan and billing market. Does not need an API key.
 
 ## Example Usage
 
@@ -27,7 +27,7 @@ output "region_codes" {
 
 ### Optional
 
-- `online_only` (Boolean) Only locations whose probes are online now.
+- `online_only` (Boolean) Only locations that are online now.
 
 ### Read-Only
 

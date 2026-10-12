@@ -49,10 +49,10 @@ var planLimitCodes = map[string]bool{
 const idempotencyInProgressCode = "IDEMPOTENCY_REQUEST_IN_PROGRESS"
 
 // idempotentPostRoutes are the POST routes the API runs at most once per
-// Idempotency-Key. Mirrors IDEMPOTENT_ROUTES in
-// backend/src/middleware/idempotency.ts (path after the optional /v1 prefix,
-// no trailing slash): keep the two lists in step. Only these POSTs are
-// retried; every other POST (acknowledge, resolve, run-check, pause, test,
+// Idempotency-Key (path after the optional /v1 prefix, no trailing slash),
+// as listed in the API reference. Only these POSTs and the read-only
+// safePostRoutes are retried after a network error, a timeout or a 5xx (a 429
+// is retried for every request); every other POST (acknowledge, resolve, run-check, pause, test,
 // rotate-secret ...) is sent once, because the API would run it again.
 var idempotentPostRoutes = []*regexp.Regexp{
 	regexp.MustCompile(`^/monitors$`),
@@ -260,7 +260,7 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// ParseError normalises the three error body shapes the backend uses:
+// ParseError normalises the three error body shapes the API uses:
 // {"error": "msg", "code": "X"}, {"error": "Validation failed", "errors": [{field, message}]}
 // and {"success": false, "error": {"code": "X", "message": "msg"}}.
 func ParseError(status int, body []byte) *Error {

@@ -59,9 +59,9 @@ func (d *regionsDataSource) Metadata(_ context.Context, req datasource.MetadataR
 
 func (d *regionsDataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "SutramX probe locations. Use `code` in `sutramx_monitor.regions`. Which codes a monitor may use depends on the plan and billing market. Does not need an API key.",
+		MarkdownDescription: "SutramX monitoring locations. Use `code` in `sutramx_monitor.regions`. Which codes a monitor may use depends on the plan and billing market. Does not need an API key.",
 		Attributes: map[string]schema.Attribute{
-			"online_only": schema.BoolAttribute{Optional: true, MarkdownDescription: "Only locations whose probes are online now."},
+			"online_only": schema.BoolAttribute{Optional: true, MarkdownDescription: "Only locations that are online now."},
 			"codes":       schema.ListAttribute{Computed: true, ElementType: types.StringType, MarkdownDescription: "Location codes, in activation order."},
 			"regions": schema.ListNestedAttribute{
 				Computed: true,

@@ -13,7 +13,7 @@ BREAKING CHANGES:
 ENHANCEMENTS:
 
 * Retries are now safe for creates and never repeat an action:
-  * The `POST` creates the API runs once per `Idempotency-Key` (status pages and the other routes in the backend's `IDEMPOTENT_ROUTES`, alert channels included) send a key, the same one on each retry, and are retried on network errors, timeouts and HTTP 502/503/504. A `409 IDEMPOTENCY_REQUEST_IN_PROGRESS` answer (the first try is still running) waits `Retry-After` and asks again with the same key. Servers without Idempotency-Key support ignore the header.
+  * The `POST` creates the API runs once per `Idempotency-Key` (status pages and alert channels) send a key, the same one on each retry, and are retried on network errors, timeouts and HTTP 502/503/504. A `409 IDEMPOTENCY_REQUEST_IN_PROGRESS` answer (the first try is still running) waits `Retry-After` and asks again with the same key. Servers without Idempotency-Key support ignore the header.
   * The read-only `POST /automation/monitors/plan` is retried like a read.
   * Any other `POST` (an action such as acknowledge, resolve, run-check, pause, test or rotate-secret) carries no key and is sent once after a network error, a timeout or a 5xx, since a retry could run it twice.
   * A 429 is retried for every request, actions included: the API's rate limiter answers before the request runs.
@@ -47,7 +47,7 @@ FEATURES:
 * **New resource:** `sutramx_monitor`: HTTP, API, ping, port, UDP, cron (heartbeat), DNS, multi-step and MCP server monitors, written through the idempotent `PUT /automation/monitors/{key}` endpoint. Import by id or key.
 * **New resource:** `sutramx_status_page`: status page settings and the ordered list of monitors shown on it. Import by id.
 * **New resource:** `sutramx_alert_channel`: integration connections (webhook, Slack, and other channel types) with `all`, `groups` or `monitors` alert routing. Needs an API key with automation access. Import by id.
-* **New data source:** `sutramx_regions`: probe locations.
+* **New data source:** `sutramx_regions`: monitoring locations.
 * **New data source:** `sutramx_plans`: plans, prices and limits.
 * **New data source:** `sutramx_maintenance_windows`: maintenance windows (read-only).
 * **New data source:** `sutramx_escalation_policies`: escalation policies (read-only).
@@ -60,4 +60,4 @@ NOTES:
 * Values SutramX normalizes must be written in the stored form, or plan fails: monitor `name` and `url`, status page `title`, `description` and monitor `section` without leading or trailing whitespace; alert channel `name` also without repeated inner whitespace. Previously such values failed apply with "Provider produced inconsistent result after apply". An empty status page `description` or `section` is also rejected (leave the attribute out).
 * `sutramx_monitor`: `url` is required at plan time for `http` and `api` monitors. For other types, removing `url` from the configuration now removes it in SutramX (before, the stored URL stayed and apply failed with an inconsistent result).
 * `sutramx_monitor`: `url` and `config_json` are sensitive, because they can contain credentials (URL userinfo, tokens, headers, multi-step secrets). Plans do not show them, and an `output` that uses them needs `sensitive = true`.
-* `sutramx_monitor`: `regions` on a `cron` (heartbeat) monitor is a plan-time error, since heartbeat monitors are not checked from probe locations and the API refuses regions for them. The provider never sends `regions` for cron monitors and keeps them null in state.
+* `sutramx_monitor`: `regions` on a `cron` (heartbeat) monitor is a plan-time error, since heartbeat monitors are not checked from monitoring locations and the API refuses regions for them. The provider never sends `regions` for cron monitors and keeps them null in state.

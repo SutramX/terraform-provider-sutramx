@@ -60,7 +60,7 @@ gpg --full-generate-key
 #   size: 4096
 #   expiry: 0 (does not expire) or a date you will remember to renew
 #   name: SutramX Terraform Provider
-#   email: an address you control, e.g. admin@sutramx.com
+#   email: a role address you control (not a personal one)
 #   passphrase: a strong one; you need it for the PASSPHRASE secret
 
 gpg --list-secret-keys --keyid-format LONG     # note the key id after "rsa4096/"

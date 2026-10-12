@@ -156,7 +156,7 @@ func TestCronMonitorRegions(t *testing.T) {
 	unknownRegions := map[string]tftypes.Value{"name": str("Nightly"), "type": str("cron"),
 		"regions": tftypes.NewValue(tftypes.Set{ElementType: tftypes.String}, tftypes.UnknownValue)}
 	httpRegions := map[string]tftypes.Value{"name": str("Web"), "url": str("https://example.com"), "regions": regions("fra1")}
-	expectValidation(t, "cron with regions", withRegions, "not checked from probe locations")
+	expectValidation(t, "cron with regions", withRegions, "not checked from monitoring locations")
 	expectValidation(t, "cron without regions", cron, "")
 	expectValidation(t, "cron with unknown regions", unknownRegions, "")
 	expectValidation(t, "http with regions", httpRegions, "")

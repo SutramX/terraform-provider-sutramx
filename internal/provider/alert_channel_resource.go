@@ -27,7 +27,7 @@ var (
 	_ resource.ResourceWithValidateConfig = (*alertChannelResource)(nil)
 )
 
-// Routing scopes of a connection (backend IntegrationRouting.scope).
+// Routing scopes of a connection (the API's routing.scope values).
 const (
 	routingScopeAll      = "all"
 	routingScopeGroups   = "groups"
