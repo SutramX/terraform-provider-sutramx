@@ -12,7 +12,12 @@ BREAKING CHANGES:
 
 ENHANCEMENTS:
 
-* The `POST` creates the API runs once per key (status pages, alert channels and the other routes in the backend's `IDEMPOTENT_ROUTES`) send an `Idempotency-Key`, the same one on each retry, and are now retried on network errors, timeouts and HTTP 502/503/504. Any other `POST` (an action such as acknowledge, resolve or run-check) carries no key and is retried only on 429 (refused before it ran); after a network error, a timeout or a 5xx it is sent once, since a retry could run it twice; `409 IDEMPOTENT_RESPONSE_WITHHELD` is an error. A `409 IDEMPOTENCY_REQUEST_IN_PROGRESS` answer waits `Retry-After` and retries with the same key. Servers without Idempotency-Key support ignore the header.
+* Retries are now safe for creates and never repeat an action:
+  * The `POST` creates the API runs once per `Idempotency-Key` (status pages and the other routes in the backend's `IDEMPOTENT_ROUTES`, alert channels included) send a key, the same one on each retry, and are retried on network errors, timeouts and HTTP 502/503/504. A `409 IDEMPOTENCY_REQUEST_IN_PROGRESS` answer (the first try is still running) waits `Retry-After` and asks again with the same key. Servers without Idempotency-Key support ignore the header.
+  * The read-only `POST /automation/monitors/plan` is retried like a read.
+  * Any other `POST` (an action such as acknowledge, resolve, run-check, pause, test or rotate-secret) carries no key and is sent once after a network error, a timeout or a 5xx, since a retry could run it twice.
+  * A 429 is retried for every request, actions included: the API's rate limiter answers before the request runs.
+  * `409 IDEMPOTENT_RESPONSE_WITHHELD` (the first try succeeded, but its answer held a secret shown only once) is returned as an error, not retried. Rotate the channel's secret if you did not save it.
 * `Retry-After` is read as seconds or as an HTTP date and honoured up to 120 seconds per wait (was 30), never past the context deadline. A 429 is retried up to 10 times, so `terraform destroy` of many monitors waits out the API's rate limit.
 * Plan-limit refusals (`category: PLAN_LIMIT`, or codes such as `ENTITLEMENT_LIMIT_REACHED`, `MONITOR_TOTAL_LIMIT_REACHED`, `CONNECTION_LIMIT_REACHED`, `FEATURE_NOT_AVAILABLE`) are never retried and fail with a "plan limit reached" diagnostic.
 * Warnings the API attaches to a monitor, status page or alert channel write are shown as Terraform warnings.
