@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net/http"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
@@ -35,6 +36,9 @@ const (
 
 // The API accepts at most this many group or monitor ids per connection.
 const maxRoutingTargets = 500
+
+// The API refuses longer connection names (CONNECTION_NAME_MAX).
+const maxAlertChannelNameLength = 60
 
 func NewAlertChannelResource() resource.Resource { return &alertChannelResource{} }
 
@@ -73,9 +77,10 @@ func (r *alertChannelResource) Schema(_ context.Context, _ resource.SchemaReques
 				PlanModifiers:       []planmodifier.String{stringplanmodifier.RequiresReplace()},
 			},
 			"name": schema.StringAttribute{
-				MarkdownDescription: "Display name, unique among channels of the same type. 1-80 characters; SutramX trims it and collapses runs of whitespace to one space, so write it that way.",
-				Required:            true,
-				Validators:          []validator.String{stringvalidator.LengthBetween(1, 80), normalizedStringValidator{what: "Name", collapseSpaces: true}},
+				MarkdownDescription: "Display name, 1-60 characters. SutramX does not require names to be unique, so give each channel its own name to tell them apart. " +
+					"SutramX trims it and collapses runs of whitespace to one space, so write it that way.",
+				Required:   true,
+				Validators: []validator.String{stringvalidator.LengthBetween(1, maxAlertChannelNameLength), normalizedStringValidator{what: "Name", collapseSpaces: true}},
 			},
 			"config": schema.MapAttribute{
 				MarkdownDescription: "Channel fields, e.g. `{ webhook_url = var.slack_webhook_url }` for Slack or `{ integration_key = ... }` for PagerDuty. " +
@@ -251,10 +256,12 @@ func (r *alertChannelResource) Create(ctx context.Context, req resource.CreateRe
 		return
 	}
 	var saved client.ConnectionSaveResponse
-	if err := r.client.Post(ctx, "/integrations/"+client.PathEscape(plan.Type.ValueString())+"/connections", body, &saved); err != nil {
+	warnings, err := r.client.Send(ctx, http.MethodPost, "/integrations/"+client.PathEscape(plan.Type.ValueString())+"/connections", body, &saved)
+	if err != nil {
 		apiErrorDiag(&resp.Diagnostics, "Could not create the alert channel", err)
 		return
 	}
+	addAPIWarnings(&resp.Diagnostics, warnings)
 	plan.SigningSecret = stringOrNull(saved.SigningSecret)
 	connection := r.find(ctx, saved.ConnectionID, &resp.Diagnostics)
 	if connection == nil {
@@ -296,7 +303,9 @@ func (r *alertChannelResource) Update(ctx context.Context, req resource.UpdateRe
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	if err := r.client.Put(ctx, "/integrations/connections/"+client.PathEscape(state.ID.ValueString()), body, nil); err != nil {
+	warnings, err := r.client.Send(ctx, http.MethodPut, "/integrations/connections/"+client.PathEscape(state.ID.ValueString()), body, nil)
+	addAPIWarnings(&resp.Diagnostics, warnings)
+	if err != nil {
 		apiErrorDiag(&resp.Diagnostics, "Could not update the alert channel", err)
 		return
 	}

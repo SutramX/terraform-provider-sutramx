@@ -3,9 +3,12 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseErrorShapes(t *testing.T) {
@@ -128,5 +131,171 @@ func TestDoRetries429AndNotPost500(t *testing.T) {
 	}
 	if err := c.Get(context.Background(), "/redirect", &monitor); err == nil {
 		t.Fatal("redirects must not be followed")
+	}
+}
+
+func TestPostSendsOneIdempotencyKeyAcrossRetries(t *testing.T) {
+	var keys []string
+	var clients []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		keys = append(keys, r.Header.Get("Idempotency-Key"))
+		clients = append(clients, r.Header.Get("X-SutramX-Client")+"|"+r.Header.Get("User-Agent"))
+		switch len(keys) {
+		case 1:
+			w.WriteHeader(http.StatusBadGateway)
+		case 2:
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"error":"A request with this key is still running","code":"IDEMPOTENCY_REQUEST_IN_PROGRESS"}`))
+		case 3:
+			// Network failure mid-request: the connection is dropped.
+			hj, _ := w.(http.Hijacker)
+			conn, _, _ := hj.Hijack()
+			_ = conn.Close()
+		default:
+			w.Header().Set("Idempotent-Replayed", "true")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id":"p1","warnings":["Ignored unknown field: foo"]}`))
+		}
+	}))
+	defer server.Close()
+	c := New("sk_test", server.URL, "terraform-provider-sutramx/1.2.3")
+	var page StatusPage
+	warnings, err := c.Send(context.Background(), http.MethodPost, "/status/pages", map[string]any{"title": "x"}, &page)
+	if err != nil || page.ID != "p1" {
+		t.Fatalf("err=%v page=%+v", err, page)
+	}
+	if len(keys) != 4 || keys[0] == "" || keys[1] != keys[0] || keys[2] != keys[0] || keys[3] != keys[0] {
+		t.Fatalf("one key for every retry of the same POST, got %q", keys)
+	}
+	if clients[0] != "terraform-provider-sutramx/1.2.3|terraform-provider-sutramx/1.2.3" {
+		t.Fatalf("client headers %q", clients[0])
+	}
+	if len(warnings) != 1 || warnings[0] != "Ignored unknown field: foo" {
+		t.Fatalf("warnings %q", warnings)
+	}
+
+	// A second logical create gets a new key.
+	if err := c.Post(context.Background(), "/status/pages", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if keys[4] == keys[0] {
+		t.Fatal("each POST needs its own Idempotency-Key")
+	}
+	// Reads and updates carry no key.
+	_ = c.Get(context.Background(), "/status/pages/p1", nil)
+	if keys[5] != "" {
+		t.Fatalf("GET sent Idempotency-Key %q", keys[5])
+	}
+}
+
+func TestPlanLimitIsNotRetried(t *testing.T) {
+	hits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Retry-After", "0")
+		if r.URL.Path == "/category" {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":"Monthly AI limit reached","code":"SOMETHING_NEW","category":"PLAN_LIMIT","details":{"resource":"ai"}}`))
+			return
+		}
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"Your plan allows 10 monitors","code":"ENTITLEMENT_LIMIT_REACHED"}`))
+	}))
+	defer server.Close()
+	c := New("sk_test", server.URL, "test")
+	for _, path := range []string{"/category", "/code"} {
+		hits = 0
+		err := c.Post(context.Background(), path, nil, nil)
+		if apiErr, ok := AsPlanLimit(err); !ok || hits != 1 {
+			t.Fatalf("%s: plan limit must fail at once: err=%v (%+v) hits=%d", path, err, apiErr, hits)
+		}
+	}
+	if _, ok := AsPlanLimit(&Error{Status: 403, Code: "READ_ONLY_ACCESS"}); ok {
+		t.Fatal("READ_ONLY_ACCESS is not a plan limit")
+	}
+}
+
+func TestDeleteRetries429WithRetryAfter(t *testing.T) {
+	hits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		if hits <= 6 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":"Too many requests","code":"RATE_LIMITED"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	c := New("sk_test", server.URL, "test")
+	// More 429s in a row than the 4 attempts other failures get.
+	if err := c.Delete(context.Background(), "/monitors/m1"); err != nil || hits != 7 {
+		t.Fatalf("err=%v hits=%d", err, hits)
+	}
+}
+
+func TestRetryAfterBeyondDeadlineFailsFast(t *testing.T) {
+	hits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Retry-After", "90")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"Too many requests","code":"RATE_LIMITED"}`))
+	}))
+	defer server.Close()
+	c := New("sk_test", server.URL, "test")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	started := time.Now()
+	err := c.Delete(ctx, "/monitors/m1")
+	var apiErr *Error
+	if !errors.As(err, &apiErr) || apiErr.Status != 429 || apiErr.RetryAfter != 90*time.Second || hits != 1 {
+		t.Fatalf("err=%v hits=%d", err, hits)
+	}
+	if time.Since(started) > time.Second {
+		t.Fatal("must not wait past the deadline")
+	}
+	if !strings.Contains(err.Error(), "retry after 1m30s") {
+		t.Fatalf("message should mention Retry-After: %v", err)
+	}
+}
+
+func TestParseRetryAfter(t *testing.T) {
+	now := time.Date(2026, 10, 12, 10, 0, 0, 0, time.UTC)
+	cases := map[string]time.Duration{
+		"0":                             0,
+		"45":                            45 * time.Second,
+		" 600 ":                         600 * time.Second,
+		"Mon, 12 Oct 2026 10:01:30 GMT": 90 * time.Second,
+		"Mon, 12 Oct 2026 09:59:00 GMT": 0,
+	}
+	for in, want := range cases {
+		got, ok := parseRetryAfter(in, now)
+		if !ok || got != want {
+			t.Errorf("parseRetryAfter(%q) = %v, %v; want %v", in, got, ok, want)
+		}
+	}
+	for _, in := range []string{"", "-1", "soon", "1.5"} {
+		if _, ok := parseRetryAfter(in, now); ok {
+			t.Errorf("parseRetryAfter(%q) should be ignored", in)
+		}
+	}
+	if d := retryDelay(0, "600"); d != maxRetryDelay || maxRetryDelay != 120*time.Second {
+		t.Fatalf("long Retry-After capped at 120s, got %v", d)
+	}
+	if d := retryDelay(0, "100"); d != 100*time.Second {
+		t.Fatalf("Retry-After under the cap is honoured, got %v", d)
+	}
+	if d := retryDelay(30, ""); d > maxRetryDelay {
+		t.Fatalf("backoff capped, got %v", d)
+	}
+}
+
+func TestParseErrorCategory(t *testing.T) {
+	err := ParseError(403, []byte(`{"error":"Upgrade","code":"FEATURE_NOT_AVAILABLE","category":"PLAN_LIMIT","details":{"resource":"monitors"}}`))
+	if err.Category != "PLAN_LIMIT" || !err.IsPlanLimit() || err.Message != "Upgrade" {
+		t.Fatalf("%+v", err)
 	}
 }

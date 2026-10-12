@@ -2,7 +2,10 @@ package provider
 
 import (
 	"context"
+	"fmt"
+	"net/http"
 	"regexp"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -21,10 +24,18 @@ import (
 )
 
 var (
-	_ resource.Resource                = (*statusPageResource)(nil)
-	_ resource.ResourceWithConfigure   = (*statusPageResource)(nil)
-	_ resource.ResourceWithImportState = (*statusPageResource)(nil)
+	_ resource.Resource                   = (*statusPageResource)(nil)
+	_ resource.ResourceWithConfigure      = (*statusPageResource)(nil)
+	_ resource.ResourceWithImportState    = (*statusPageResource)(nil)
+	_ resource.ResourceWithValidateConfig = (*statusPageResource)(nil)
 )
+
+// statusPageSlugPattern is the API's slug syntax (statusPageState.validateSlug):
+// lower-case letters and digits in groups joined by single hyphens.
+var statusPageSlugPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
+
+// reservedStatusPageSlugs are slugs the API refuses (they collide with its routes).
+var reservedStatusPageSlugs = []string{"pages", "domain", "tls", "subscribers", "me", "monitor", "api", "admin", "status", "new", "feed", "badge"}
 
 func NewStatusPageResource() resource.Resource { return &statusPageResource{} }
 
@@ -74,11 +85,16 @@ func (r *statusPageResource) Schema(_ context.Context, _ resource.SchemaRequest,
 				Validators:          []validator.String{stringvalidator.LengthBetween(1, 255), normalizedStringValidator{what: "Title"}},
 			},
 			"slug": schema.StringAttribute{
-				MarkdownDescription: "URL slug (lower-case letters, digits, hyphens). Generated from the title when not set.",
-				Optional:            true,
-				Computed:            true,
-				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
-				Validators:          []validator.String{stringvalidator.RegexMatches(regexp.MustCompile(`^[a-z0-9-]{3,64}$`), "3-64 lower-case letters, digits or hyphens")},
+				MarkdownDescription: "URL slug: 3-64 lower-case letters and digits, with single hyphens between them (no leading, trailing or double hyphen). " +
+					"Must not be taken by another page, and not one of the reserved words `" + strings.Join(reservedStatusPageSlugs, "`, `") + "`. Generated from the title when not set.",
+				Optional:      true,
+				Computed:      true,
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+				Validators: []validator.String{
+					stringvalidator.LengthBetween(3, 64),
+					stringvalidator.RegexMatches(statusPageSlugPattern, "must be lower-case letters and digits with single hyphens between them"),
+					stringvalidator.NoneOf(reservedStatusPageSlugs...),
+				},
 			},
 			"description": schema.StringAttribute{
 				MarkdownDescription: "Up to 1000 characters, without leading or trailing whitespace (SutramX trims it and stores an empty description as none, so leave the attribute out instead).",
@@ -91,7 +107,11 @@ func (r *statusPageResource) Schema(_ context.Context, _ resource.SchemaRequest,
 				Computed:            true,
 				PlanModifiers:       []planmodifier.Bool{boolplanmodifier.UseStateForUnknown()},
 			},
-			"logo_url":     schema.StringAttribute{Optional: true, MarkdownDescription: "https:// image URL.", Validators: []validator.String{stringvalidator.RegexMatches(regexp.MustCompile(`^https://\S+$`), "must be an https:// URL")}},
+			"logo_url": schema.StringAttribute{
+				Optional:            true,
+				MarkdownDescription: "`https://` image URL, up to 2048 characters, without user name or password.",
+				Validators:          []validator.String{httpsURLValidator{}},
+			},
 			"accent_color": schema.StringAttribute{Optional: true, MarkdownDescription: "Hex colour like `#0d9488`.", Validators: []validator.String{stringvalidator.RegexMatches(regexp.MustCompile(`^#[0-9a-fA-F]{6}$`), "use a hex colour like #0d9488")}},
 			"show_response_times": schema.BoolAttribute{
 				Optional:      true,
@@ -111,7 +131,11 @@ func (r *statusPageResource) Schema(_ context.Context, _ resource.SchemaRequest,
 				PlanModifiers:       []planmodifier.List{listplanmodifier.UseStateForUnknown()},
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
-						"monitor_id": schema.StringAttribute{Required: true, MarkdownDescription: "`sutramx_monitor.<name>.id`"},
+						"monitor_id": schema.StringAttribute{
+							Required:            true,
+							MarkdownDescription: "`sutramx_monitor.<name>.id`. Each monitor can be listed once.",
+							Validators:          []validator.String{stringvalidator.RegexMatches(uuidPattern, "must be a monitor id (UUID)")},
+						},
 						"section": schema.StringAttribute{
 							Optional:            true,
 							MarkdownDescription: "Optional heading the monitor is grouped under, 1-100 characters without leading or trailing whitespace.",
@@ -121,6 +145,34 @@ func (r *statusPageResource) Schema(_ context.Context, _ resource.SchemaRequest,
 				},
 			},
 		},
+	}
+}
+
+// ValidateConfig refuses a monitor listed twice: the API keeps only the
+// first entry, so the list could never be read back as configured.
+func (r *statusPageResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var monitors types.List
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("monitors"), &monitors)...)
+	if resp.Diagnostics.HasError() || monitors.IsNull() || monitors.IsUnknown() {
+		return
+	}
+	seen := map[string]int{}
+	for index, element := range monitors.Elements() {
+		object, ok := element.(types.Object)
+		if !ok || object.IsNull() || object.IsUnknown() {
+			continue
+		}
+		id, ok := object.Attributes()["monitor_id"].(types.String)
+		if !ok || id.IsNull() || id.IsUnknown() {
+			continue
+		}
+		key := strings.ToLower(id.ValueString())
+		if first, dup := seen[key]; dup {
+			resp.Diagnostics.AddAttributeError(path.Root("monitors").AtListIndex(index).AtName("monitor_id"), "Monitor listed twice",
+				fmt.Sprintf("Monitor %s is already listed at monitors[%d]. A status page shows each monitor once; remove the second entry.", id.ValueString(), first))
+			continue
+		}
+		seen[key] = index
 	}
 }
 
@@ -174,7 +226,9 @@ func (r *statusPageResource) setMonitors(ctx context.Context, id string, configu
 	for _, entry := range entries {
 		items = append(items, map[string]any{"monitor_id": entry.MonitorID.ValueString(), "section": optionalString(entry.Section)})
 	}
-	if err := r.client.Put(ctx, "/status/pages/"+client.PathEscape(id)+"/monitors", map[string]any{"monitors": items}, nil); err != nil {
+	warnings, err := r.client.Send(ctx, http.MethodPut, "/status/pages/"+client.PathEscape(id)+"/monitors", map[string]any{"monitors": items}, nil)
+	addAPIWarnings(diags, warnings)
+	if err != nil {
 		apiErrorDiag(diags, "Could not set the status page monitors", err)
 	}
 }
@@ -234,11 +288,15 @@ func (r *statusPageResource) Create(ctx context.Context, req resource.CreateRequ
 		createBody["is_public"] = plan.IsPublic.ValueBool()
 	}
 	var created client.StatusPage
-	if err := r.client.Post(ctx, "/status/pages", createBody, &created); err != nil {
+	warnings, err := r.client.Send(ctx, http.MethodPost, "/status/pages", createBody, &created)
+	if err != nil {
 		apiErrorDiag(&resp.Diagnostics, "Could not create the status page", err)
 		return
 	}
-	if err := r.client.Patch(ctx, "/status/pages/"+client.PathEscape(created.ID), r.patchBody(plan, true), nil); err != nil {
+	addAPIWarnings(&resp.Diagnostics, warnings)
+	warnings, err = r.client.Send(ctx, http.MethodPatch, "/status/pages/"+client.PathEscape(created.ID), r.patchBody(plan, true), nil)
+	addAPIWarnings(&resp.Diagnostics, warnings)
+	if err != nil {
 		// Do not leave a half-configured page behind (e.g. the slug is taken).
 		_ = r.client.Delete(ctx, "/status/pages/"+client.PathEscape(created.ID))
 		apiErrorDiag(&resp.Diagnostics, "Could not configure the status page", err)
@@ -277,7 +335,9 @@ func (r *statusPageResource) Update(ctx context.Context, req resource.UpdateRequ
 	}
 	id := state.ID.ValueString()
 	includeSlug := !plan.Slug.IsUnknown() && plan.Slug.ValueString() != state.Slug.ValueString()
-	if err := r.client.Patch(ctx, "/status/pages/"+client.PathEscape(id), r.patchBody(plan, includeSlug), nil); err != nil {
+	warnings, err := r.client.Send(ctx, http.MethodPatch, "/status/pages/"+client.PathEscape(id), r.patchBody(plan, includeSlug), nil)
+	addAPIWarnings(&resp.Diagnostics, warnings)
+	if err != nil {
 		apiErrorDiag(&resp.Diagnostics, "Could not update the status page", err)
 		return
 	}
