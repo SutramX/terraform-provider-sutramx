@@ -14,6 +14,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -46,6 +47,51 @@ var planLimitCodes = map[string]bool{
 }
 
 const idempotencyInProgressCode = "IDEMPOTENCY_REQUEST_IN_PROGRESS"
+
+// idempotentPostRoutes are the POST routes the API runs at most once per
+// Idempotency-Key. Mirrors IDEMPOTENT_ROUTES in
+// backend/src/middleware/idempotency.ts (path after the optional /v1 prefix,
+// no trailing slash): keep the two lists in step. Only these POSTs are
+// retried; every other POST (acknowledge, resolve, run-check, pause, test,
+// rotate-secret ...) is sent once, because the API would run it again.
+var idempotentPostRoutes = []*regexp.Regexp{
+	regexp.MustCompile(`^/monitors$`),
+	regexp.MustCompile(`^/monitors/bulk$`),
+	regexp.MustCompile(`^/monitors/detect/apply$`),
+	regexp.MustCompile(`^/monitor-groups$`),
+	regexp.MustCompile(`^/status/pages$`),
+	regexp.MustCompile(`^/status/pages/[^/]+/monitors$`),
+	regexp.MustCompile(`^/integrations/[^/]+/connections$`),
+	regexp.MustCompile(`^/integrations/[^/]+/connect$`),
+	regexp.MustCompile(`^/incidents$`),
+	regexp.MustCompile(`^/incidents/runbooks$`),
+	regexp.MustCompile(`^/incidents/[^/]+/notes$`),
+	regexp.MustCompile(`^/maintenance$`),
+	regexp.MustCompile(`^/automation/monitors/apply$`),
+}
+
+// isIdempotentPostRoute reports whether a POST to path (relative to the base
+// URL; a query string, an /api or /v1 prefix and a trailing slash are
+// ignored) is one the API dedupes by Idempotency-Key.
+func isIdempotentPostRoute(path string) bool {
+	if i := strings.IndexAny(path, "?#"); i >= 0 {
+		path = path[:i]
+	}
+	for _, prefix := range []string{"/api", "/v1"} {
+		if path == prefix || strings.HasPrefix(path, prefix+"/") {
+			path = path[len(prefix):]
+		}
+	}
+	if len(path) > 1 {
+		path = strings.TrimRight(path, "/")
+	}
+	for _, route := range idempotentPostRoutes {
+		if route.MatchString(path) {
+			return true
+		}
+	}
+	return false
+}
 
 // ValidateBaseURL checks an API base URL before any key is sent to it:
 // https only (plain http just for loopback development servers), and no
@@ -283,8 +329,8 @@ func (c *Client) Send(ctx context.Context, method, path string, body, out any) (
 	return c.do(ctx, method, path, nil, body, out, false)
 }
 
-// newIdempotencyKey is one random key per logical POST, reused on every
-// retry of it, so the API runs the create once (servers without
+// newIdempotencyKey is one random key per logical create POST, reused on
+// every retry of it, so the API runs the create once (servers without
 // Idempotency-Key support ignore the header).
 func newIdempotencyKey() string {
 	buf := make([]byte, 16)
@@ -296,13 +342,18 @@ func newIdempotencyKey() string {
 
 // do sends the request with retries:
 //
-//   - 429 for every method (the request was refused, not run), up to
-//     maxRateLimitAttempts times, waiting Retry-After (at most maxRetryDelay);
+//   - 429 (the request was refused, not run) for every method except a POST
+//     outside idempotentPostRoutes, up to maxRateLimitAttempts times, waiting
+//     Retry-After (at most maxRetryDelay);
 //   - 502/503/504 and network errors (timeouts included) for GET, PUT,
-//     DELETE and POST, since every POST carries an Idempotency-Key that
-//     makes the API run it once;
-//   - 409 IDEMPOTENCY_REQUEST_IN_PROGRESS (the first try of the same POST is
-//     still running) after Retry-After, with the same key.
+//     DELETE and the POST creates in idempotentPostRoutes, which carry an
+//     Idempotency-Key that makes the API run them once;
+//   - 409 IDEMPOTENCY_REQUEST_IN_PROGRESS (the first try of the same create
+//     is still running) after Retry-After, with the same key.
+//
+// Any other POST (an action such as acknowledge, resolve or run-check) is
+// sent once: a retry could run it twice. 409 IDEMPOTENT_RESPONSE_WITHHELD is
+// returned as an error.
 //
 // Plan-limit refusals are never retried. A wait that would run past ctx's
 // deadline is not started; the API error is returned instead.
@@ -318,11 +369,16 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 			return nil, err
 		}
 	}
+	// Only the creates the API dedupes carry a key: net/http's Transport
+	// itself replays a request that has an Idempotency-Key header when a
+	// reused connection drops, so an action must not have one.
 	idempotencyKey := ""
-	if method == http.MethodPost {
+	if method == http.MethodPost && isIdempotentPostRoute(path) {
 		idempotencyKey = newIdempotencyKey()
 	}
-	retrySafe := method == http.MethodGet || method == http.MethodPut || method == http.MethodDelete || idempotencyKey != ""
+	dedupedPost := idempotencyKey != ""
+	retrySafe := method == http.MethodGet || method == http.MethodPut || method == http.MethodDelete || dedupedPost
+	retryRateLimit := method != http.MethodPost || dedupedPost
 	failures, rateLimited, inProgress := 0, 0, 0
 	for {
 		var reader io.Reader
@@ -391,8 +447,8 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		case apiErr.IsPlanLimit():
 		case status == http.StatusTooManyRequests:
 			rateLimited++
-			retry, attempt = rateLimited < maxRateLimitAttempts, rateLimited-1
-		case status == http.StatusConflict && apiErr.Code == idempotencyInProgressCode && idempotencyKey != "":
+			retry, attempt = retryRateLimit && rateLimited < maxRateLimitAttempts, rateLimited-1
+		case status == http.StatusConflict && apiErr.Code == idempotencyInProgressCode && dedupedPost:
 			inProgress++
 			retry = inProgress < maxInProgressAttempts
 		case retrySafe && (status == http.StatusBadGateway || status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout):
