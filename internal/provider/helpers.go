@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -311,4 +312,44 @@ func (v normalizedStringValidator) ValidateString(_ context.Context, req validat
 	}
 	resp.Diagnostics.AddAttributeError(req.Path, "Invalid "+strings.ToLower(v.what),
 		fmt.Sprintf("%s %q %s, so write it as %q.", v.what, value, how, normalized))
+}
+
+// httpsURLValidator mirrors the API's httpsUrl check (status page logo):
+// an absolute https URL of at most 2048 characters with a host and no user
+// name or password. Leading or trailing whitespace is refused as well,
+// since the API trims it and the value would read back changed.
+var _ validator.String = httpsURLValidator{}
+
+type httpsURLValidator struct{}
+
+func (httpsURLValidator) Description(_ context.Context) string {
+	return "must be an https:// URL of at most 2048 characters, without user name or password"
+}
+
+func (v httpsURLValidator) MarkdownDescription(ctx context.Context) string { return v.Description(ctx) }
+
+func (v httpsURLValidator) ValidateString(ctx context.Context, req validator.StringRequest, resp *validator.StringResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	if problem := httpsURLProblem(req.ConfigValue.ValueString()); problem != "" {
+		resp.Diagnostics.AddAttributeError(req.Path, "Invalid URL", problem)
+	}
+}
+
+func httpsURLProblem(value string) string {
+	if strings.TrimSpace(value) != value {
+		return "The URL has leading or trailing whitespace; SutramX trims it. Write it without."
+	}
+	if utf8.RuneCountInString(value) > 2048 {
+		return "The URL is longer than 2048 characters."
+	}
+	u, err := url.Parse(value)
+	if err != nil || !strings.EqualFold(u.Scheme, "https") || u.Host == "" || u.Hostname() == "" || strings.ContainsAny(value, " \t\r\n") {
+		return "Must be an absolute https:// URL."
+	}
+	if u.User != nil {
+		return "The URL must not contain a user name or password."
+	}
+	return ""
 }

@@ -37,6 +37,9 @@ const (
 // The API accepts at most this many group or monitor ids per connection.
 const maxRoutingTargets = 500
 
+// The API refuses longer connection names (CONNECTION_NAME_MAX).
+const maxAlertChannelNameLength = 60
+
 func NewAlertChannelResource() resource.Resource { return &alertChannelResource{} }
 
 type alertChannelResource struct {
@@ -74,9 +77,10 @@ func (r *alertChannelResource) Schema(_ context.Context, _ resource.SchemaReques
 				PlanModifiers:       []planmodifier.String{stringplanmodifier.RequiresReplace()},
 			},
 			"name": schema.StringAttribute{
-				MarkdownDescription: "Display name, unique among channels of the same type. 1-80 characters; SutramX trims it and collapses runs of whitespace to one space, so write it that way.",
-				Required:            true,
-				Validators:          []validator.String{stringvalidator.LengthBetween(1, 80), normalizedStringValidator{what: "Name", collapseSpaces: true}},
+				MarkdownDescription: "Display name, 1-60 characters. SutramX does not require names to be unique, so give each channel its own name to tell them apart. " +
+					"SutramX trims it and collapses runs of whitespace to one space, so write it that way.",
+				Required:   true,
+				Validators: []validator.String{stringvalidator.LengthBetween(1, maxAlertChannelNameLength), normalizedStringValidator{what: "Name", collapseSpaces: true}},
 			},
 			"config": schema.MapAttribute{
 				MarkdownDescription: "Channel fields, e.g. `{ webhook_url = var.slack_webhook_url }` for Slack or `{ integration_key = ... }` for PagerDuty. " +
