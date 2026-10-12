@@ -5,6 +5,8 @@ package client
 import (
 	"bytes"
 	"context"
+	cryptorand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,9 +22,30 @@ import (
 const DefaultAPIURL = "https://api.sutramx.com"
 
 const (
-	maxAttempts   = 4
-	maxRetryDelay = 30 * time.Second
+	maxAttempts = 4
+	// A 429 is retried more often than other failures: the API refused the
+	// request without running it, and a rate-limit window can be 15 minutes.
+	maxRateLimitAttempts = 10
+	// A create still running under the same Idempotency-Key (409
+	// IDEMPOTENCY_REQUEST_IN_PROGRESS) is polled this many times at most.
+	maxInProgressAttempts = 60
+	// Longest single wait between attempts, also when Retry-After asks for more.
+	maxRetryDelay = 120 * time.Second
 )
+
+// Error codes the API uses for plan limits (category PLAN_LIMIT on newer
+// servers). Retrying never helps: the plan has to change first.
+var planLimitCodes = map[string]bool{
+	"ENTITLEMENT_LIMIT_REACHED":      true,
+	"ENTITLEMENT_INTERVAL_TOO_SHORT": true,
+	"MONITOR_TOTAL_LIMIT_REACHED":    true,
+	"CONNECTION_LIMIT_REACHED":       true,
+	"LIMIT_REACHED":                  true,
+	"FEATURE_NOT_AVAILABLE":          true,
+	"AI_LIMIT_REACHED":               true,
+}
+
+const idempotencyInProgressCode = "IDEMPOTENCY_REQUEST_IN_PROGRESS"
 
 // ValidateBaseURL checks an API base URL before any key is sent to it:
 // https only (plain http just for loopback development servers), and no
@@ -59,16 +82,38 @@ func IsOfficialHost(baseURL string) bool {
 
 // Error is a non-2xx answer from the API.
 type Error struct {
-	Status  int
-	Code    string
-	Message string
+	Status   int
+	Code     string
+	Category string
+	Message  string
+	// RetryAfter is the wait the API asked for (Retry-After), if any.
+	RetryAfter time.Duration
+}
+
+// IsPlanLimit reports whether the API refused the request because of the
+// workspace's plan (monitor count, interval, channel type...).
+func (e *Error) IsPlanLimit() bool {
+	return e.Category == "PLAN_LIMIT" || planLimitCodes[e.Code]
 }
 
 func (e *Error) Error() string {
+	text := fmt.Sprintf("SutramX API error (HTTP %d): %s", e.Status, e.Message)
 	if e.Code != "" {
-		return fmt.Sprintf("SutramX API error (HTTP %d %s): %s", e.Status, e.Code, e.Message)
+		text = fmt.Sprintf("SutramX API error (HTTP %d %s): %s", e.Status, e.Code, e.Message)
 	}
-	return fmt.Sprintf("SutramX API error (HTTP %d): %s", e.Status, e.Message)
+	if e.Status == http.StatusTooManyRequests && e.RetryAfter > 0 {
+		text += fmt.Sprintf(" (the API asked to retry after %s)", e.RetryAfter.Round(time.Second))
+	}
+	return text
+}
+
+// AsPlanLimit returns the API error when err is a plan-limit refusal.
+func AsPlanLimit(err error) (*Error, bool) {
+	var apiErr *Error
+	if errors.As(err, &apiErr) && apiErr.IsPlanLimit() {
+		return apiErr, true
+	}
+	return nil, false
 }
 
 // IsNotFound reports whether err is an API 404.
@@ -100,12 +145,41 @@ func New(apiKey, baseURL, userAgent string) *Client {
 	}
 }
 
-// retryDelay honours Retry-After (seconds) or backs off exponentially with jitter.
-func retryDelay(attempt int, retryAfter string) time.Duration {
-	if seconds, err := strconv.Atoi(strings.TrimSpace(retryAfter)); err == nil && seconds >= 0 {
-		return min(time.Duration(seconds)*time.Second, maxRetryDelay)
+// parseRetryAfter reads a Retry-After header: delta-seconds or an HTTP-date.
+func parseRetryAfter(value string, now time.Time) (time.Duration, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, false
 	}
-	return min(500*time.Millisecond<<attempt+rand.N(250*time.Millisecond), maxRetryDelay)
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
+		if seconds < 0 {
+			return 0, false
+		}
+		if seconds > int64(24*time.Hour/time.Second) {
+			seconds = int64(24 * time.Hour / time.Second)
+		}
+		return time.Duration(seconds) * time.Second, true
+	}
+	if at, err := http.ParseTime(value); err == nil {
+		return max(at.Sub(now), 0), true
+	}
+	return 0, false
+}
+
+// retryDelay honours Retry-After (seconds or HTTP-date, at most
+// maxRetryDelay) or backs off exponentially with jitter.
+func retryDelay(attempt int, retryAfter string) time.Duration {
+	if wait, ok := parseRetryAfter(retryAfter, time.Now()); ok {
+		return min(wait, maxRetryDelay)
+	}
+	return min(500*time.Millisecond<<min(attempt, 8)+rand.N(250*time.Millisecond), maxRetryDelay)
+}
+
+// fitsDeadline reports whether waiting d still leaves time before ctx's
+// deadline (always true without one).
+func fitsDeadline(ctx context.Context, d time.Duration) bool {
+	deadline, ok := ctx.Deadline()
+	return !ok || time.Until(deadline) > d
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) error {
@@ -151,6 +225,9 @@ func ParseError(status int, body []byte) *Error {
 			}
 		}
 	}
+	if categoryField, ok := raw["category"]; ok {
+		_ = json.Unmarshal(categoryField, &out.Category)
+	}
 	if codeField, ok := raw["code"]; ok {
 		var code string
 		if json.Unmarshal(codeField, &code) == nil && code != "" {
@@ -192,11 +269,44 @@ func ParseError(status int, body []byte) *Error {
 
 // Do sends a request; body (if not nil) is JSON-encoded and the JSON answer
 // is decoded into out (if not nil). anonymous skips the API key.
-//
-// 429 is retried for every method (the request was refused, not run);
-// 502/503/504 and network errors only for GET, PUT and DELETE. Retries
-// honour Retry-After and stop when ctx is cancelled.
 func (c *Client) Do(ctx context.Context, method, path string, query url.Values, body, out any, anonymous bool) error {
+	_, err := c.do(ctx, method, path, query, body, out, anonymous)
+	return err
+}
+
+// Send is Do for writes: it also returns the `warnings` the API attached to
+// the answer (e.g. "Ignored unknown field: foo"); older servers send none.
+func (c *Client) Send(ctx context.Context, method, path string, body, out any) ([]string, error) {
+	if method == http.MethodPost && body == nil {
+		body = map[string]any{}
+	}
+	return c.do(ctx, method, path, nil, body, out, false)
+}
+
+// newIdempotencyKey is one random key per logical POST, reused on every
+// retry of it, so the API runs the create once (servers without
+// Idempotency-Key support ignore the header).
+func newIdempotencyKey() string {
+	buf := make([]byte, 16)
+	if _, err := cryptorand.Read(buf); err != nil {
+		return ""
+	}
+	return "tf-" + hex.EncodeToString(buf)
+}
+
+// do sends the request with retries:
+//
+//   - 429 for every method (the request was refused, not run), up to
+//     maxRateLimitAttempts times, waiting Retry-After (at most maxRetryDelay);
+//   - 502/503/504 and network errors (timeouts included) for GET, PUT,
+//     DELETE and POST, since every POST carries an Idempotency-Key that
+//     makes the API run it once;
+//   - 409 IDEMPOTENCY_REQUEST_IN_PROGRESS (the first try of the same POST is
+//     still running) after Retry-After, with the same key.
+//
+// Plan-limit refusals are never retried. A wait that would run past ctx's
+// deadline is not started; the API error is returned instead.
+func (c *Client) do(ctx context.Context, method, path string, query url.Values, body, out any, anonymous bool) ([]string, error) {
 	target := c.baseURL + path
 	if len(query) > 0 {
 		target += "?" + query.Encode()
@@ -205,62 +315,100 @@ func (c *Client) Do(ctx context.Context, method, path string, query url.Values, 
 	if body != nil {
 		var err error
 		if encoded, err = json.Marshal(body); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	idempotent := method == http.MethodGet || method == http.MethodPut || method == http.MethodDelete
-	for attempt := 0; ; attempt++ {
-		last := attempt >= maxAttempts-1
+	idempotencyKey := ""
+	if method == http.MethodPost {
+		idempotencyKey = newIdempotencyKey()
+	}
+	retrySafe := method == http.MethodGet || method == http.MethodPut || method == http.MethodDelete || idempotencyKey != ""
+	failures, rateLimited, inProgress := 0, 0, 0
+	for {
 		var reader io.Reader
 		if encoded != nil {
 			reader = bytes.NewReader(encoded)
 		}
 		req, err := http.NewRequestWithContext(ctx, method, target, reader)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		req.Header.Set("Accept", "application/json")
 		req.Header.Set("User-Agent", c.userAgent)
+		req.Header.Set("X-SutramX-Client", c.userAgent)
 		if encoded != nil {
 			req.Header.Set("Content-Type", "application/json")
+		}
+		if idempotencyKey != "" {
+			req.Header.Set("Idempotency-Key", idempotencyKey)
 		}
 		if !anonymous {
 			req.Header.Set("Authorization", "Bearer "+c.apiKey)
 		}
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
-			if idempotent && !last && ctx.Err() == nil {
-				if waitErr := sleepCtx(ctx, retryDelay(attempt, "")); waitErr != nil {
-					return waitErr
+			failures++
+			if retrySafe && failures < maxAttempts && ctx.Err() == nil {
+				delay := retryDelay(failures-1, "")
+				if fitsDeadline(ctx, delay) {
+					if waitErr := sleepCtx(ctx, delay); waitErr != nil {
+						return nil, waitErr
+					}
+					continue
 				}
-				continue
 			}
-			return fmt.Errorf("could not reach the SutramX API at %s: %w", c.baseURL, err)
+			return nil, fmt.Errorf("could not reach the SutramX API at %s: %w", c.baseURL, err)
 		}
 		data, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 		resp.Body.Close()
 		if err != nil {
-			return err
+			return nil, err
 		}
 		status := resp.StatusCode
-		retryable := status == http.StatusTooManyRequests ||
-			(idempotent && (status == http.StatusBadGateway || status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout))
-		if retryable && !last {
-			if waitErr := sleepCtx(ctx, retryDelay(attempt, resp.Header.Get("Retry-After"))); waitErr != nil {
-				return waitErr
+		if status >= 200 && status <= 299 {
+			if status == http.StatusNoContent || len(data) == 0 {
+				return nil, nil
 			}
-			continue
+			var envelope struct {
+				Warnings []string `json:"warnings"`
+			}
+			_ = json.Unmarshal(data, &envelope)
+			if out != nil {
+				if err := json.Unmarshal(data, out); err != nil {
+					return nil, fmt.Errorf("unexpected response from %s %s: %w", method, path, err)
+				}
+			}
+			return envelope.Warnings, nil
 		}
-		if status < 200 || status > 299 {
-			return ParseError(status, data)
+
+		apiErr := ParseError(status, data)
+		retryAfter := resp.Header.Get("Retry-After")
+		if wait, ok := parseRetryAfter(retryAfter, time.Now()); ok {
+			apiErr.RetryAfter = wait
 		}
-		if out == nil || status == http.StatusNoContent || len(data) == 0 {
-			return nil
+		retry, attempt := false, 0
+		switch {
+		case apiErr.IsPlanLimit():
+		case status == http.StatusTooManyRequests:
+			rateLimited++
+			retry, attempt = rateLimited < maxRateLimitAttempts, rateLimited-1
+		case status == http.StatusConflict && apiErr.Code == idempotencyInProgressCode && idempotencyKey != "":
+			inProgress++
+			retry = inProgress < maxInProgressAttempts
+		case retrySafe && (status == http.StatusBadGateway || status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout):
+			failures++
+			retry, attempt = failures < maxAttempts, failures-1
 		}
-		if err := json.Unmarshal(data, out); err != nil {
-			return fmt.Errorf("unexpected response from %s %s: %w", method, path, err)
+		if retry {
+			delay := retryDelay(attempt, retryAfter)
+			if fitsDeadline(ctx, delay) {
+				if waitErr := sleepCtx(ctx, delay); waitErr != nil {
+					return nil, waitErr
+				}
+				continue
+			}
 		}
-		return nil
+		return nil, apiErr
 	}
 }
 
@@ -273,10 +421,8 @@ func (c *Client) GetPublic(ctx context.Context, path string, out any) error {
 }
 
 func (c *Client) Post(ctx context.Context, path string, body, out any) error {
-	if body == nil {
-		body = map[string]any{}
-	}
-	return c.Do(ctx, http.MethodPost, path, nil, body, out, false)
+	_, err := c.Send(ctx, http.MethodPost, path, body, out)
+	return err
 }
 
 func (c *Client) Put(ctx context.Context, path string, body, out any) error {
