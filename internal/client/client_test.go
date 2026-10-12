@@ -325,10 +325,6 @@ func TestNonIdempotentPostIsSentOnce(t *testing.T) {
 			t.Errorf("%s carried Idempotency-Key %q", r.URL.Path, key)
 		}
 		switch r.URL.Path {
-		case "/monitors/m1/run-check":
-			w.Header().Set("Retry-After", "0")
-			w.WriteHeader(http.StatusTooManyRequests)
-			_, _ = w.Write([]byte(`{"error":"slow down"}`))
 		case "/incidents/i1/acknowledge":
 			hj, _ := w.(http.Hijacker)
 			conn, _, _ := hj.Hijack()
@@ -405,5 +401,37 @@ func TestCreatePostRetriedWithSameKey(t *testing.T) {
 	var apiErr *Error
 	if !errors.As(err, &apiErr) || apiErr.Code != "IDEMPOTENT_RESPONSE_WITHHELD" || hits != 1 {
 		t.Fatalf("withheld: err=%v hits=%d", err, hits)
+	}
+}
+
+func TestActionPostRetriedOnlyOn429AndPlanLikeARead(t *testing.T) {
+	if !isSafePostRoute("/automation/monitors/plan") || !isSafePostRoute("/v1/automation/monitors/plan/") || isSafePostRoute("/automation/monitors/apply") || isSafePostRoute("/incidents/i1/resolve") {
+		t.Fatal("safePostRoutes")
+	}
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if len(paths) == 1 {
+			if r.URL.Path == "/monitors/m1/run-check" {
+				// A rate limiter answers before the handler: the check did not run.
+				w.Header().Set("Retry-After", "0")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(`{"error":"slow down"}`))
+				return
+			}
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+	c := New("sk_test", server.URL, "test")
+	ctx := context.Background()
+	if err := c.Post(ctx, "/monitors/m1/run-check", nil, nil); err != nil || len(paths) != 2 {
+		t.Fatalf("429 on an action is retried: err=%v paths=%q", err, paths)
+	}
+	paths = nil
+	if err := c.Post(ctx, "/automation/monitors/plan", nil, nil); err != nil || len(paths) != 2 {
+		t.Fatalf("the read-only plan is retried on 503: err=%v paths=%q", err, paths)
 	}
 }

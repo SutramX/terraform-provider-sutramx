@@ -70,10 +70,16 @@ var idempotentPostRoutes = []*regexp.Regexp{
 	regexp.MustCompile(`^/automation/monitors/apply$`),
 }
 
-// isIdempotentPostRoute reports whether a POST to path (relative to the base
-// URL; a query string, an /api or /v1 prefix and a trailing slash are
-// ignored) is one the API dedupes by Idempotency-Key.
-func isIdempotentPostRoute(path string) bool {
+// safePostRoutes are POST routes that only read (nothing changes on the
+// server), so a retry is safe without an Idempotency-Key. The API does not
+// dedupe them: keep them out of idempotentPostRoutes.
+var safePostRoutes = []*regexp.Regexp{
+	regexp.MustCompile(`^/automation/monitors/plan$`),
+}
+
+// routeOf is path relative to the base URL without a query string, an /api
+// or /v1 prefix and a trailing slash.
+func routeOf(path string) string {
 	if i := strings.IndexAny(path, "?#"); i >= 0 {
 		path = path[:i]
 	}
@@ -85,13 +91,25 @@ func isIdempotentPostRoute(path string) bool {
 	if len(path) > 1 {
 		path = strings.TrimRight(path, "/")
 	}
-	for _, route := range idempotentPostRoutes {
-		if route.MatchString(path) {
+	return path
+}
+
+func matchesAny(routes []*regexp.Regexp, path string) bool {
+	route := routeOf(path)
+	for _, pattern := range routes {
+		if pattern.MatchString(route) {
 			return true
 		}
 	}
 	return false
 }
+
+// isIdempotentPostRoute reports whether a POST to path is one the API
+// dedupes by Idempotency-Key.
+func isIdempotentPostRoute(path string) bool { return matchesAny(idempotentPostRoutes, path) }
+
+// isSafePostRoute reports whether a POST to path only reads.
+func isSafePostRoute(path string) bool { return matchesAny(safePostRoutes, path) }
 
 // ValidateBaseURL checks an API base URL before any key is sent to it:
 // https only (plain http just for loopback development servers), and no
@@ -342,17 +360,18 @@ func newIdempotencyKey() string {
 
 // do sends the request with retries:
 //
-//   - 429 (the request was refused, not run) for every method except a POST
-//     outside idempotentPostRoutes, up to maxRateLimitAttempts times, waiting
-//     Retry-After (at most maxRetryDelay);
+//   - 429 for every method (the API's rate limiters answer before the
+//     handler, so the request did not run), up to maxRateLimitAttempts
+//     times, waiting Retry-After (at most maxRetryDelay);
 //   - 502/503/504 and network errors (timeouts included) for GET, PUT,
-//     DELETE and the POST creates in idempotentPostRoutes, which carry an
-//     Idempotency-Key that makes the API run them once;
+//     DELETE, the read-only POSTs in safePostRoutes and the POST creates in
+//     idempotentPostRoutes, which carry an Idempotency-Key that makes the
+//     API run them once;
 //   - 409 IDEMPOTENCY_REQUEST_IN_PROGRESS (the first try of the same create
 //     is still running) after Retry-After, with the same key.
 //
 // Any other POST (an action such as acknowledge, resolve or run-check) is
-// sent once: a retry could run it twice. 409 IDEMPOTENT_RESPONSE_WITHHELD is
+// sent once unless refused with 429: a retry could run it twice. 409 IDEMPOTENT_RESPONSE_WITHHELD is
 // returned as an error.
 //
 // Plan-limit refusals are never retried. A wait that would run past ctx's
@@ -377,8 +396,8 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		idempotencyKey = newIdempotencyKey()
 	}
 	dedupedPost := idempotencyKey != ""
-	retrySafe := method == http.MethodGet || method == http.MethodPut || method == http.MethodDelete || dedupedPost
-	retryRateLimit := method != http.MethodPost || dedupedPost
+	retrySafe := method == http.MethodGet || method == http.MethodPut || method == http.MethodDelete || dedupedPost ||
+		(method == http.MethodPost && isSafePostRoute(path))
 	failures, rateLimited, inProgress := 0, 0, 0
 	for {
 		var reader io.Reader
@@ -447,7 +466,7 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		case apiErr.IsPlanLimit():
 		case status == http.StatusTooManyRequests:
 			rateLimited++
-			retry, attempt = retryRateLimit && rateLimited < maxRateLimitAttempts, rateLimited-1
+			retry, attempt = rateLimited < maxRateLimitAttempts, rateLimited-1
 		case status == http.StatusConflict && apiErr.Code == idempotencyInProgressCode && dedupedPost:
 			inProgress++
 			retry = inProgress < maxInProgressAttempts
