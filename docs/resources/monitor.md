@@ -18,7 +18,7 @@ resource "sutramx_monitor" "website" {
   name             = "Website"
   url              = "https://www.example.com"
   interval_seconds = 60
-  regions          = ["fra1", "usa-az-probe"] # codes from the sutramx_regions data source
+  regions          = ["fra1", "usa-az"] # codes from the sutramx_regions data source
   tags             = ["prod", "web"]
   config_json = jsonencode({
     timeout               = 10000
@@ -131,7 +131,7 @@ output "nightly_job_heartbeat_url" {
 - `interval_seconds` (Number) Seconds between checks (15-900, not below the plan minimum). Defaults to the plan default.
 - `key` (String) Stable key, unique in the workspace (the same `key` sutramx.yml uses). Creates are idempotent by key. Letters, digits and `. _ : / -`, up to 128 characters. Generated (`tf-...`) when not set, but **set it explicitly**: a generated key is only saved once apply records the monitor in state, so when an apply is interrupted after SutramX created the monitor (a timeout, a cancelled run), the next apply generates a new key and creates a second monitor. With an explicit key it finds and updates the first one.
 - `paused` (Boolean) Pause checks. Defaults to `false`.
-- `regions` (Set of String) Monitoring location codes (see the `sutramx_regions` data source). Order does not matter. Omit to use the plan's default locations. Not allowed for `cron` (heartbeat) monitors, which are not checked from locations.
+- `regions` (Set of String) Monitoring location codes (see the `sutramx_regions` data source). Order does not matter. Omit to use the plan's default locations. Not allowed for `cron` (heartbeat) monitors, which are not checked from locations. The Arizona, USA location is `usa-az`; its earlier code is still accepted and plans no changes, but use `usa-az` in new configurations.
 - `tags` (Set of String) Tags, up to 20, each 1-32 characters. SutramX stores tags lower-case and trimmed, so they must be written that way: a tag with upper-case letters or surrounding spaces is a validation error at plan time. Left untouched when omitted.
 - `type` (String) Monitor type: `http` (default), `api`, `ping`, `port`, `udp`, `cron`, `dns` (DNS records), `multistep` (multi-step API check) or `mcp` (remote MCP server). `dns` and `multistep` must be included in the workspace's plan, which also caps the steps of a multi-step check. Other values are passed to the API unchecked, so a type added to SutramX later works without a provider update. Changing it replaces the monitor.
 - `url` (String, Sensitive) Target URL, required for `http`, `api` and `mcp` monitors (for `mcp`, the server's Streamable HTTP endpoint, which must be `https://`). Ping, port and UDP monitors use `host` in `config_json`, DNS monitors `hostname`, multi-step checks a `url` per step. Written without leading or trailing whitespace (SutramX trims it). Removing it from the configuration of another monitor type removes it in SutramX. Sensitive (it can contain credentials), so plans do not show it.

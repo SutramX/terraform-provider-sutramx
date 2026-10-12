@@ -125,10 +125,24 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			monitor["tags"] = lowered
 		}
-		if regions, ok := body["regions"]; ok && !sameRegionSet(monitor["probe_regions"], regions) {
-			// Like the server: the same set in another order is no change,
-			// so the stored order is kept.
-			monitor["probe_regions"] = regions
+		if regions, ok := body["regions"]; ok {
+			// Like the server: a renamed location code is stored as its
+			// current code (usa-az-probe -> usa-az).
+			if list, isList := regions.([]any); isList {
+				mapped := []any{}
+				for _, code := range list {
+					if fmt.Sprint(code) == "usa-az-probe" {
+						code = "usa-az"
+					}
+					mapped = append(mapped, code)
+				}
+				regions = mapped
+			}
+			// The same set in another order is no change, so the stored
+			// order is kept.
+			if !sameRegionSet(monitor["probe_regions"], regions) {
+				monitor["probe_regions"] = regions
+			}
 		}
 		if paused, ok := body["paused"].(bool); ok {
 			monitor["is_active"] = !paused

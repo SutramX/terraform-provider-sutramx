@@ -353,3 +353,40 @@ func httpsURLProblem(value string) string {
 	}
 	return ""
 }
+
+// locationCodeAliases maps renamed monitoring location codes to their
+// current code. The API accepts the old code and stores and returns the
+// current one; the provider treats both as the same location so a
+// configuration that still uses the old code plans no changes.
+var locationCodeAliases = map[string]string{
+	"usa-az-probe": "usa-az", // Arizona, USA (2026-10-13)
+}
+
+func canonicalLocationCode(code string) string {
+	if current, ok := locationCodeAliases[code]; ok {
+		return current
+	}
+	return code
+}
+
+// sameLocations reports whether two location code lists name the same set of
+// locations once renamed codes are mapped to their current code.
+func sameLocations(a, b []string) bool {
+	set := func(codes []string) map[string]struct{} {
+		out := make(map[string]struct{}, len(codes))
+		for _, code := range codes {
+			out[canonicalLocationCode(code)] = struct{}{}
+		}
+		return out
+	}
+	left, right := set(a), set(b)
+	if len(left) != len(right) {
+		return false
+	}
+	for code := range left {
+		if _, ok := right[code]; !ok {
+			return false
+		}
+	}
+	return true
+}

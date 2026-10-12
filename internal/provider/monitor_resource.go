@@ -155,7 +155,8 @@ func (r *monitorResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			},
 			"regions": schema.SetAttribute{
 				MarkdownDescription: "Monitoring location codes (see the `sutramx_regions` data source). Order does not matter. Omit to use the plan's default locations. " +
-					"Not allowed for `cron` (heartbeat) monitors, which are not checked from locations.",
+					"Not allowed for `cron` (heartbeat) monitors, which are not checked from locations. " +
+					"The Arizona, USA location is `usa-az`; its earlier code is still accepted and plans no changes, but use `usa-az` in new configurations.",
 				ElementType: types.StringType,
 				Optional:    true,
 				Validators: []validator.Set{
@@ -301,7 +302,16 @@ func applyMonitor(ctx context.Context, monitor client.Monitor, model *monitorMod
 	model.Paused = types.BoolValue(!monitor.IsActive)
 	model.Tags = stringSetValue(ctx, monitor.Tags, diags)
 	if len(monitor.ProbeRegions) > 0 && monitor.Type != cronMonitorType {
-		model.Regions = stringSetValue(ctx, monitor.ProbeRegions, diags)
+		// A configuration may still name a location by its old code
+		// (locationCodeAliases); the API answers with the current one. Keep
+		// the configured spelling while it means the same locations.
+		var prior []string
+		if !model.Regions.IsNull() && !model.Regions.IsUnknown() {
+			diags.Append(model.Regions.ElementsAs(ctx, &prior, false)...)
+		}
+		if prior == nil || !sameLocations(prior, monitor.ProbeRegions) {
+			model.Regions = stringSetValue(ctx, monitor.ProbeRegions, diags)
+		}
 	} else {
 		model.Regions = types.SetNull(types.StringType)
 	}

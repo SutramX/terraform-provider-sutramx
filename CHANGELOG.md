@@ -22,6 +22,7 @@ ENHANCEMENTS:
 * Plan-limit refusals (`category: PLAN_LIMIT`, or codes such as `ENTITLEMENT_LIMIT_REACHED`, `MONITOR_TOTAL_LIMIT_REACHED`, `CONNECTION_LIMIT_REACHED`, `FEATURE_NOT_AVAILABLE`) are never retried and fail with a "plan limit reached" diagnostic.
 * Warnings the API attaches to a monitor, status page or alert channel write are shown as Terraform warnings.
 * Requests send `X-SutramX-Client: terraform-provider-sutramx/<version>` next to the User-Agent.
+* `sutramx_monitor`: the Arizona, USA monitoring location code is now `usa-az`. `regions` still accepts the earlier code and treats it as equal to `usa-az`, so a configuration that uses it plans no changes (the API stores and returns `usa-az`). Use `usa-az` in new configurations; with provider 0.1.2 or older, change the code to `usa-az` in `regions` to avoid an "inconsistent result after apply" error.
 
 NOTES:
 
