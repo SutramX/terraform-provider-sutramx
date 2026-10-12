@@ -299,3 +299,139 @@ func TestParseErrorCategory(t *testing.T) {
 		t.Fatalf("%+v", err)
 	}
 }
+
+func TestIdempotentPostRoutes(t *testing.T) {
+	for _, path := range []string{"/monitors", "/v1/monitors", "/monitors/", "/monitors?x=1", "/monitors/bulk", "/monitors/detect/apply", "/monitor-groups",
+		"/status/pages", "/status/pages/p1/monitors", "/integrations/slack/connections", "/integrations/slack/connect", "/incidents",
+		"/incidents/runbooks", "/incidents/i1/notes", "/maintenance", "/automation/monitors/apply", "/api/v1/maintenance"} {
+		if !isIdempotentPostRoute(path) {
+			t.Errorf("%s should be retried", path)
+		}
+	}
+	for _, path := range []string{"/incidents/i1/acknowledge", "/incidents/i1/resolve", "/monitors/m1/run-check", "/monitors/m1/pause",
+		"/monitors/m1/resume", "/integrations/slack/connections/c1/test", "/monitors/m1/heartbeat/rotate-secret", "/automation/monitors/plan", "/monitors/m1"} {
+		if isIdempotentPostRoute(path) {
+			t.Errorf("%s must not be retried", path)
+		}
+	}
+}
+
+func TestNonIdempotentPostIsSentOnce(t *testing.T) {
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if key := r.Header.Get("Idempotency-Key"); key != "" {
+			// net/http would replay such a request on a dropped reused connection.
+			t.Errorf("%s carried Idempotency-Key %q", r.URL.Path, key)
+		}
+		switch r.URL.Path {
+		case "/incidents/i1/acknowledge":
+			hj, _ := w.(http.Hijacker)
+			conn, _, _ := hj.Hijack()
+			_ = conn.Close()
+		case "/incidents/i1/resolve/slow":
+			time.Sleep(500 * time.Millisecond)
+			w.WriteHeader(http.StatusOK)
+		case "/incidents/i2/resolve":
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"error":"running","code":"IDEMPOTENCY_REQUEST_IN_PROGRESS"}`))
+		default:
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+	}))
+	defer server.Close()
+	c := New("sk_test", server.URL, "test")
+	ctx := context.Background()
+	for _, path := range []string{"/incidents/i1/resolve", "/monitors/m1/pause", "/integrations/slack/connections/c1/test", "/monitors/m1/run-check", "/incidents/i1/acknowledge", "/incidents/i2/resolve"} {
+		paths = nil
+		if err := c.Post(ctx, path, nil, nil); err == nil {
+			t.Fatalf("%s: expected an error", path)
+		}
+		if len(paths) != 1 {
+			t.Fatalf("%s: attempted %d times, want once", path, len(paths))
+		}
+	}
+	// A timeout is not retried either.
+	c.httpClient.Timeout = 100 * time.Millisecond
+	paths = nil
+	if err := c.Post(ctx, "/incidents/i1/resolve/slow", nil, nil); err == nil {
+		t.Fatal("expected a timeout")
+	}
+	time.Sleep(600 * time.Millisecond)
+	if len(paths) != 1 {
+		t.Fatalf("timed-out POST attempted %d times, want once", len(paths))
+	}
+}
+
+func TestCreatePostRetriedWithSameKey(t *testing.T) {
+	var keys []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		keys = append(keys, r.Header.Get("Idempotency-Key"))
+		switch len(keys) {
+		case 1:
+			w.WriteHeader(http.StatusServiceUnavailable)
+		case 2:
+			time.Sleep(300 * time.Millisecond) // times out
+		default:
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id":"m1"}`))
+		}
+	}))
+	defer server.Close()
+	c := New("sk_test", server.URL+"/v1", "test")
+	c.httpClient.Timeout = 100 * time.Millisecond
+	var monitor Monitor
+	if err := c.Post(context.Background(), "/monitors", map[string]any{"name": "x"}, &monitor); err != nil || monitor.ID != "m1" {
+		t.Fatalf("err=%v monitor=%+v", err, monitor)
+	}
+	if len(keys) != 3 || keys[0] == "" || keys[1] != keys[0] || keys[2] != keys[0] {
+		t.Fatalf("POST /monitors must be retried with one key, got %q", keys)
+	}
+
+	// 409 IDEMPOTENT_RESPONSE_WITHHELD is an error, not retried.
+	hits := 0
+	withheld := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":"The original response held a secret","code":"IDEMPOTENT_RESPONSE_WITHHELD"}`))
+	}))
+	defer withheld.Close()
+	err := New("sk_test", withheld.URL, "test").Post(context.Background(), "/monitors", nil, nil)
+	var apiErr *Error
+	if !errors.As(err, &apiErr) || apiErr.Code != "IDEMPOTENT_RESPONSE_WITHHELD" || hits != 1 {
+		t.Fatalf("withheld: err=%v hits=%d", err, hits)
+	}
+}
+
+func TestActionPostRetriedOnlyOn429AndPlanLikeARead(t *testing.T) {
+	if !isSafePostRoute("/automation/monitors/plan") || !isSafePostRoute("/v1/automation/monitors/plan/") || isSafePostRoute("/automation/monitors/apply") || isSafePostRoute("/incidents/i1/resolve") {
+		t.Fatal("safePostRoutes")
+	}
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if len(paths) == 1 {
+			if r.URL.Path == "/monitors/m1/run-check" {
+				// A rate limiter answers before the handler: the check did not run.
+				w.Header().Set("Retry-After", "0")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(`{"error":"slow down"}`))
+				return
+			}
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+	c := New("sk_test", server.URL, "test")
+	ctx := context.Background()
+	if err := c.Post(ctx, "/monitors/m1/run-check", nil, nil); err != nil || len(paths) != 2 {
+		t.Fatalf("429 on an action is retried: err=%v paths=%q", err, paths)
+	}
+	paths = nil
+	if err := c.Post(ctx, "/automation/monitors/plan", nil, nil); err != nil || len(paths) != 2 {
+		t.Fatalf("the read-only plan is retried on 503: err=%v paths=%q", err, paths)
+	}
+}
