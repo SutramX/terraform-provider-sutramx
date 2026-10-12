@@ -41,10 +41,10 @@ resource "sutramx_status_page" "public" {
 - `description` (String) Up to 1000 characters, without leading or trailing whitespace (SutramX trims it and stores an empty description as none, so leave the attribute out instead).
 - `hide_powered_by` (Boolean) Remove SutramX branding (plans with white-label status pages).
 - `is_public` (Boolean) Whether the page is published.
-- `logo_url` (String) https:// image URL.
+- `logo_url` (String) `https://` image URL, up to 2048 characters, without user name or password.
 - `monitors` (Attributes List) Monitors shown on the page, in display order. Omit to manage them in the dashboard (the attribute then shows the current list). (see [below for nested schema](#nestedatt--monitors))
 - `show_response_times` (Boolean)
-- `slug` (String) URL slug (lower-case letters, digits, hyphens). Generated from the title when not set.
+- `slug` (String) URL slug: 3-64 lower-case letters and digits, with single hyphens between them (no leading, trailing or double hyphen). Must not be taken by another page, and not one of the reserved words `pages`, `domain`, `tls`, `subscribers`, `me`, `monitor`, `api`, `admin`, `status`, `new`, `feed`, `badge`. Generated from the title when not set.
 
 ### Read-Only
 
@@ -55,7 +55,7 @@ resource "sutramx_status_page" "public" {
 
 Required:
 
-- `monitor_id` (String) `sutramx_monitor.<name>.id`
+- `monitor_id` (String) `sutramx_monitor.<name>.id`. Each monitor can be listed once.
 
 Optional:
 

@@ -3,6 +3,27 @@
 All notable changes to this provider are documented here. Versions follow
 [Semantic Versioning](https://semver.org/); releases are the `vX.Y.Z` git tags.
 
+## Unreleased
+
+BREAKING CHANGES:
+
+* `sutramx_alert_channel`: `name` is limited to 60 characters at plan time, the limit the API has always enforced (the provider allowed 80, and longer names failed at apply).
+* `sutramx_status_page`: `slug`, `logo_url` and `monitors[].monitor_id` are checked at plan time with the API's rules: a slug with a leading, trailing or double hyphen or a reserved word (`admin`, `api`, `status`, ...), a logo URL with a user name or password or over 2048 characters, a `monitor_id` that is not a UUID, and a monitor listed twice in `monitors` are plan errors. The API refused these values (or, for a repeated monitor, kept only the first entry, which failed apply with an inconsistent result).
+
+ENHANCEMENTS:
+
+* Every `POST` (status page and alert channel creates) sends an `Idempotency-Key`, the same one on each retry, and is now retried on network errors, timeouts and HTTP 502/503/504. A `409 IDEMPOTENCY_REQUEST_IN_PROGRESS` answer waits `Retry-After` and retries with the same key. Servers without Idempotency-Key support ignore the header.
+* `Retry-After` is read as seconds or as an HTTP date and honoured up to 120 seconds per wait (was 30), never past the context deadline. A 429 is retried up to 10 times, so `terraform destroy` of many monitors waits out the API's rate limit.
+* Plan-limit refusals (`category: PLAN_LIMIT`, or codes such as `ENTITLEMENT_LIMIT_REACHED`, `MONITOR_TOTAL_LIMIT_REACHED`, `CONNECTION_LIMIT_REACHED`, `FEATURE_NOT_AVAILABLE`) are never retried and fail with a "plan limit reached" diagnostic.
+* Warnings the API attaches to a monitor, status page or alert channel write are shown as Terraform warnings.
+* Requests send `X-SutramX-Client: terraform-provider-sutramx/<version>` next to the User-Agent.
+
+NOTES:
+
+* Docs: set `key` on every `sutramx_monitor`. A generated key is only saved once apply records the monitor in state, so an apply interrupted after the create (a timeout, a cancelled run) made a second monitor on the next apply.
+* Docs: the "Secrets in state" section no longer lists `api_key`. Terraform does not store provider configuration in state; plan files (`terraform plan -out`) do hold input variable values, so prefer `SUTRAMX_API_KEY`.
+* Docs: `sutramx_alert_channel` `name` is no longer described as unique; the API does not enforce it.
+
 ## 0.1.2 (October 10, 2026)
 
 No provider code changes since 0.1.0. There is no 0.1.1 release: that tag was never published.

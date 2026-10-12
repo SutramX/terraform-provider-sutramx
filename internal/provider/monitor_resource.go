@@ -87,7 +87,9 @@ func (r *monitorResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			},
 			"key": schema.StringAttribute{
 				MarkdownDescription: "Stable key, unique in the workspace (the same `key` sutramx.yml uses). Creates are idempotent by key. " +
-					"Generated (`tf-...`) when not set. Letters, digits and `. _ : / -`, up to 128 characters.",
+					"Letters, digits and `. _ : / -`, up to 128 characters. Generated (`tf-...`) when not set, but **set it explicitly**: " +
+					"a generated key is only saved once apply records the monitor in state, so when an apply is interrupted after SutramX created the monitor " +
+					"(a timeout, a cancelled run), the next apply generates a new key and creates a second monitor. With an explicit key it finds and updates the first one.",
 				Optional: true,
 				Computed: true,
 				// Non-null only: an imported dashboard monitor has no key until the
